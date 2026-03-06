@@ -1,0 +1,24 @@
+[Unit]
+Description=Conferenceroom Sensor Ingestion Handler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/gesturecontrolengine
+ExecStart=/opt/gesturecontrolengine/.venv/bin/python3 /opt/gesturecontrolengine/vps_ingestion.py --config /opt/gesturecontrolengine/vps_config.json
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/gesturecontrolengine/logs
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

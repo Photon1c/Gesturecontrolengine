@@ -26,8 +26,15 @@ Out of scope for this MVP:
 - `presence_detector.py` — debounced presence state detection
 - `gesture_detector.py` — deliberate gesture detection with cooldowns
 - `event_client.py` — authenticated HTTP event transport + retry + sequence
+- `vps_ingestion.py` — VPS ingestion + policy gate + workflow trigger guard
+- `monitor_ingestion.py` — lightweight decision-log monitoring utility
 - `config.json` — all thresholds, endpoint, auth, and logging paths
 - `requirements.txt` — Python dependencies
+- `vps_config.json` — VPS policy/auth/runtime configuration
+- `requirements-vps.txt` — VPS-only dependencies
+- `AGENT_MONITORING.md` — runbook for the monitoring agent
+- `deploy/systemd/conferenceroom-sensor-ingestion.service` — default systemd unit
+- `scripts/install_systemd_service.sh` — systemd installer/generator script
 
 ---
 
@@ -250,6 +257,112 @@ curl -X POST "https://your-vps.example.com/conferenceroom/sensors/event" \
     "payload": { "gesture": "arm_execute" }
   }'
 ```
+
+---
+
+## VPS Ingestion Handler (Conferenceroom Policy Gate)
+
+The VPS service receives events and applies policy before any trigger decision.
+
+### Install (VPS)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-vps.txt
+```
+
+### Configure
+
+Edit `vps_config.json`:
+
+- `auth.type` + token/secret
+- `policy.confirm_window_seconds`
+- `workflow.allowed_workflow` (must remain `zeroclaw_smoke`)
+- `workflow.trigger_mode`:
+  - `log_only` (safe default)
+  - `http_post` (calls configured endpoint)
+
+### Run
+
+```bash
+python3 vps_ingestion.py --config vps_config.json
+```
+
+### Install as systemd service (recommended on VPS)
+
+A default unit file is included at:
+
+- `deploy/systemd/conferenceroom-sensor-ingestion.service`
+
+An installer script is included at:
+
+- `scripts/install_systemd_service.sh`
+
+Example install (customize paths/user via env vars):
+
+```bash
+sudo APP_DIR=/opt/gesturecontrolengine \
+  RUN_USER=ubuntu \
+  RUN_GROUP=ubuntu \
+  PYTHON_BIN=/opt/gesturecontrolengine/.venv/bin/python3 \
+  CONFIG_PATH=/opt/gesturecontrolengine/vps_config.json \
+  ./scripts/install_systemd_service.sh
+```
+
+Service operations:
+
+```bash
+sudo systemctl status conferenceroom-sensor-ingestion --no-pager
+sudo systemctl restart conferenceroom-sensor-ingestion
+sudo journalctl -u conferenceroom-sensor-ingestion -n 200 --no-pager
+```
+
+Endpoints:
+
+- `POST /conferenceroom/sensors/event` (authenticated ingestion)
+- `GET /conferenceroom/sensors/state` (latest per-sensor runtime state)
+- `GET /healthz` (service health)
+
+Response shape includes:
+
+- `accepted` (bool)
+- `triggered` (bool)
+- `reason` (policy/logging reason)
+- `sensor_state` (latest presence/arm/sequence snapshot)
+
+### Enforced MVP policy in `vps_ingestion.py`
+
+- Accept only supported event types and schema
+- Reject payloads containing raw media-like keys (`image`, `video`, `frame`, etc.)
+- Sequence dedupe/out-of-order protection per `sensor_id`
+- Trigger eligibility only when:
+  1. prior `arm_execute` has moved sensor to `ARMED`
+  2. `confirm_execute` arrives within confirm window
+  3. latest presence state is `at_terminal`
+  4. allowed workflow is exactly `zeroclaw_smoke`
+- All accept/reject decisions are JSONL logged
+
+---
+
+## Monitoring the VPS Handler
+
+Use the monitor utility against the decision log:
+
+```bash
+python3 monitor_ingestion.py --log ./logs/vps_ingestion_decisions.jsonl --minutes 30
+```
+
+This reports:
+
+- total accepted/rejected/triggered counts
+- top policy rejection reasons
+- per-sensor event volume
+- use `journalctl` output for runtime exceptions/startup failures
+
+Detailed monitoring runbook for the assistant/agent is in:
+
+- `AGENT_MONITORING.md`
 
 ---
 

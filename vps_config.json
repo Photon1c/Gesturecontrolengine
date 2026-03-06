@@ -1,0 +1,26 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "debug": false,
+    "max_request_bytes": 32768
+  },
+  "auth": {
+    "type": "bearer",
+    "token": "replace_me_vps_token"
+  },
+  "policy": {
+    "confirm_window_seconds": 8,
+    "allowed_workflow": "zeroclaw_smoke"
+  },
+  "workflow": {
+    "allowed_workflow": "zeroclaw_smoke",
+    "trigger_mode": "log_only",
+    "http_endpoint": "",
+    "http_bearer_token": "",
+    "http_timeout_seconds": 5
+  },
+  "logging": {
+    "decision_jsonl": "./logs/vps_ingestion_decisions.jsonl"
+  }
+}
