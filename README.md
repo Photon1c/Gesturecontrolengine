@@ -33,6 +33,8 @@ Out of scope for this MVP:
 - `vps_config.json` — VPS policy/auth/runtime configuration
 - `requirements-vps.txt` — VPS-only dependencies
 - `AGENT_MONITORING.md` — runbook for the monitoring agent
+- `deploy/systemd/conferenceroom-sensor-ingestion.service` — default systemd unit
+- `scripts/install_systemd_service.sh` — systemd installer/generator script
 
 ---
 
@@ -287,6 +289,35 @@ Edit `vps_config.json`:
 python3 vps_ingestion.py --config vps_config.json
 ```
 
+### Install as systemd service (recommended on VPS)
+
+A default unit file is included at:
+
+- `deploy/systemd/conferenceroom-sensor-ingestion.service`
+
+An installer script is included at:
+
+- `scripts/install_systemd_service.sh`
+
+Example install (customize paths/user via env vars):
+
+```bash
+sudo APP_DIR=/opt/gesturecontrolengine \
+  RUN_USER=ubuntu \
+  RUN_GROUP=ubuntu \
+  PYTHON_BIN=/opt/gesturecontrolengine/.venv/bin/python3 \
+  CONFIG_PATH=/opt/gesturecontrolengine/vps_config.json \
+  ./scripts/install_systemd_service.sh
+```
+
+Service operations:
+
+```bash
+sudo systemctl status conferenceroom-sensor-ingestion --no-pager
+sudo systemctl restart conferenceroom-sensor-ingestion
+sudo journalctl -u conferenceroom-sensor-ingestion -n 200 --no-pager
+```
+
 Endpoints:
 
 - `POST /conferenceroom/sensors/event` (authenticated ingestion)
@@ -327,6 +358,7 @@ This reports:
 - total accepted/rejected/triggered counts
 - top policy rejection reasons
 - per-sensor event volume
+- use `journalctl` output for runtime exceptions/startup failures
 
 Detailed monitoring runbook for the assistant/agent is in:
 

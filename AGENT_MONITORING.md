@@ -61,6 +61,15 @@ Unexpectedly high trigger rate = investigate immediately.
 curl -sS http://127.0.0.1:8080/healthz
 ```
 
+### systemd service checks
+
+```bash
+sudo systemctl status conferenceroom-sensor-ingestion --no-pager
+sudo systemctl is-enabled conferenceroom-sensor-ingestion
+sudo systemctl is-active conferenceroom-sensor-ingestion
+sudo journalctl -u conferenceroom-sensor-ingestion -n 200 --no-pager
+```
+
 ### Current per-sensor runtime state
 
 ```bash
@@ -78,6 +87,7 @@ python3 monitor_ingestion.py --log ./logs/vps_ingestion_decisions.jsonl --minute
 ## Suggested monitor cadence
 
 - Every 1 minute:
+  - `systemctl is-active conferenceroom-sensor-ingestion`
   - `/healthz`
   - `monitor_ingestion.py --minutes 5`
 - Every 15 minutes:
