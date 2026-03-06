@@ -1,0 +1,78 @@
+{
+  "sensor": {
+    "sensor_id": "desk_cam_1",
+    "camera_index": 0,
+    "frame_width": 640,
+    "frame_height": 480,
+    "heartbeat_seconds": 15,
+    "mirror_preview": true,
+    "pose_detection_confidence": 0.5,
+    "pose_tracking_confidence": 0.5,
+    "hand_detection_confidence": 0.5,
+    "hand_tracking_confidence": 0.5,
+    "max_num_hands": 2
+  },
+  "transport": {
+    "endpoint": "https://your-vps.example.com/conferenceroom/sensors/event",
+    "auth": {
+      "type": "bearer",
+      "token": "replace_me"
+    },
+    "retry": {
+      "max_retries": 3,
+      "request_timeout_seconds": 5,
+      "backoff_initial_seconds": 0.5,
+      "backoff_max_seconds": 4.0
+    }
+  },
+  "presence": {
+    "min_pose_visibility": 0.5,
+    "desk_zone": {
+      "x_min": 0.2,
+      "x_max": 0.8,
+      "y_min": 0.05,
+      "y_max": 0.9
+    },
+    "at_terminal_stable_seconds": 12,
+    "away_stable_seconds": 45,
+    "resting_stable_seconds": 90,
+    "asleep_stable_seconds": 180,
+    "unknown_stable_seconds": 8,
+    "transition_debounce_seconds": 1.5,
+    "resting_motion_threshold": 0.006,
+    "asleep_motion_threshold": 0.003,
+    "head_down_threshold": -0.02
+  },
+  "gesture": {
+    "arm_execute": {
+      "min_hold_frames": 8,
+      "cooldown_seconds": 6,
+      "raise_margin": 0.05
+    },
+    "confirm_execute": {
+      "min_hold_frames": 6,
+      "cooldown_seconds": 5,
+      "pinch_distance_threshold": 0.05
+    },
+    "pause": {
+      "min_hold_frames": 10,
+      "cooldown_seconds": 6
+    },
+    "cancel": {
+      "min_hold_frames": 8,
+      "cooldown_seconds": 5,
+      "cross_x_threshold": 0.08,
+      "cross_y_threshold": 0.08
+    }
+  },
+  "policy": {
+    "confirm_window_seconds": 8
+  },
+  "logging": {
+    "sequence_file": "./logs/sequence_state.json",
+    "replay_jsonl": "./logs/sensor_events.jsonl"
+  },
+  "debug": {
+    "draw_landmarks": true
+  }
+}
