@@ -1,5 +1,7 @@
 # Gesturecontrolengine (Windows-First Edge Sensor MVP)
 
+![wakeup](media/wakeup.gif)
+
 MediaPipe-based edge sensor app that runs on **Windows**, uses the webcam locally, and sends **metadata-only events** to a VPS endpoint for policy-based workflow triggering.
 
 ## Safety and MVP Scope
