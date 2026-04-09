@@ -1,3 +1,6 @@
-mediapipe
+# Classic Solutions API (mp.solutions.pose / hands) was removed in mediapipe 0.10.31+.
+mediapipe>=0.10.13,<0.10.31
+numpy>=1.24
 opencv-python
+pillow>=10.0.0
 requests

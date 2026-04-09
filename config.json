@@ -13,7 +13,7 @@
     "max_num_hands": 2
   },
   "transport": {
-    "endpoint": "https://your-vps.example.com/conferenceroom/sensors/event",
+    "endpoint": "https://185.211.4.97:8000/conferenceroom/sensors/event",
     "auth": {
       "type": "bearer",
       "token": "replace_me"
@@ -73,6 +73,9 @@
     "replay_jsonl": "./logs/sensor_events.jsonl"
   },
   "debug": {
-    "draw_landmarks": true
+    "draw_landmarks": true,
+    "show_operator_legend": true,
+    "overlay_font_scale": 0.95,
+    "fullscreen_overlay": false
   }
 }

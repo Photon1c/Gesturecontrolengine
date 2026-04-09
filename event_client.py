@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -34,6 +35,20 @@ class EventClient:
         self.replay_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._last_sequence = self._load_sequence()
+        try:
+            self._endpoint_short = urlparse(endpoint).netloc or endpoint[:40]
+        except Exception:
+            self._endpoint_short = "VPS"
+        self._transport_detail = "dry-run (no HTTP)" if dry_run else "waiting for first POST…"
+
+    @property
+    def last_sequence(self) -> int:
+        return int(self._last_sequence)
+
+    @property
+    def vps_link_line(self) -> str:
+        """One line for HUD: host + last delivery outcome (Windows–VPS link)."""
+        return f"{self._endpoint_short} · {self._transport_detail}"
 
     def emit(self, event_type: str, confidence: float, payload: dict[str, Any]) -> dict[str, Any]:
         event = {
@@ -46,7 +61,8 @@ class EventClient:
         }
 
         if self.dry_run:
-            print(f"[DRY_RUN] {json.dumps(event, separators=(',', ':'))}")
+            self._transport_detail = "dry-run (replay JSONL only)"
+            print(f"[DRY_RUN] {json.dumps(event, separators=(',', ':'))}", flush=True)
             self._append_replay(event, delivered=True, attempts=0, error=None)
             return event
 
@@ -54,13 +70,18 @@ class EventClient:
         self._append_replay(event, delivered=delivered, attempts=attempts, error=error)
 
         if delivered:
+            self._transport_detail = f"connected — POST OK (#{event['sequence']})"
             print(
-                f"[SEND_OK] sequence={event['sequence']} type={event_type} attempts={attempts}"
+                f"[SEND_OK] sequence={event['sequence']} type={event_type} attempts={attempts}",
+                flush=True,
             )
         else:
+            err = (error or "unknown")[:52]
+            self._transport_detail = f"POST FAILED — {err}"
             print(
                 f"[SEND_FAIL] sequence={event['sequence']} type={event_type} "
-                f"attempts={attempts} error={error}"
+                f"attempts={attempts} error={error}",
+                flush=True,
             )
         return event
 
