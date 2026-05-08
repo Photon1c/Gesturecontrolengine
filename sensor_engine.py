@@ -23,6 +23,14 @@ from event_client import EventClient
 from gesture_detector import GestureDetector
 from presence_detector import PresenceDetector
 
+try:
+    from plugins.jarvis.orchestrator import JarvisOrchestrator
+    from plugins.jarvis.clap_detector import AudioClapDetector
+
+    JARVIS_AVAILABLE = True
+except ImportError:
+    JARVIS_AVAILABLE = False
+
 
 class ArmStateMachine:
     """Local mirror of execute-arming flow for operator observability.
@@ -48,7 +56,10 @@ class ArmStateMachine:
 
         if self.state == "ARMED":
             if gesture == "confirm_execute":
-                if self.armed_since is not None and (ts - self.armed_since) <= self.confirm_window_seconds:
+                if (
+                    self.armed_since is not None
+                    and (ts - self.armed_since) <= self.confirm_window_seconds
+                ):
                     self.state = "IDLE"
                     self.armed_since = None
                     return "ARMED -> TRIGGER_ELIGIBLE -> IDLE"
@@ -188,7 +199,10 @@ def run_list_cameras(max_index: int = 10) -> None:
     finally:
         configure_opencv_io_logging(quiet=False)
     if not found:
-        print("No working cameras found. Check USB, privacy settings, and drivers.", flush=True)
+        print(
+            "No working cameras found. Check USB, privacy settings, and drivers.",
+            flush=True,
+        )
         return
     print(
         f"Working camera_index value(s) for config.json: {', '.join(str(i) for i in found)}",
@@ -447,7 +461,9 @@ def run_camera_loop(
     presence = PresenceDetector(config.get("presence", {}))
     gesture = GestureDetector(config.get("gesture", {}))
     machine = ArmStateMachine(
-        confirm_window_seconds=float(config.get("policy", {}).get("confirm_window_seconds", 8.0))
+        confirm_window_seconds=float(
+            config.get("policy", {}).get("confirm_window_seconds", 8.0)
+        )
     )
 
     camera_index = int(sensor_cfg.get("camera_index", 0))
@@ -470,7 +486,9 @@ def run_camera_loop(
     heartbeat_seconds = float(config["sensor"].get("heartbeat_seconds", 15))
     mirror = bool(sensor_cfg.get("mirror_preview", True))
     draw_landmarks = bool(config.get("debug", {}).get("draw_landmarks", False))
-    show_operator_legend = bool(config.get("debug", {}).get("show_operator_legend", True))
+    show_operator_legend = bool(
+        config.get("debug", {}).get("show_operator_legend", True)
+    )
     font_scale, cfg_fullscreen = _overlay_debug_cfg(config)
     use_fullscreen = fullscreen or cfg_fullscreen
 
@@ -478,20 +496,33 @@ def run_camera_loop(
     if debug_overlay:
         cv2.namedWindow(win_title, cv2.WINDOW_NORMAL)
         if use_fullscreen:
-            cv2.setWindowProperty(win_title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            cv2.setWindowProperty(
+                win_title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN
+            )
 
     fps_ema = 0.0
     t_prev = time.perf_counter()
     last_gesture_hud = "Last gesture: —"
 
-    with mp_pose.Pose(
-        min_detection_confidence=float(sensor_cfg.get("pose_detection_confidence", 0.5)),
-        min_tracking_confidence=float(sensor_cfg.get("pose_tracking_confidence", 0.5)),
-    ) as pose_model, mp_hands.Hands(
-        max_num_hands=int(sensor_cfg.get("max_num_hands", 2)),
-        min_detection_confidence=float(sensor_cfg.get("hand_detection_confidence", 0.5)),
-        min_tracking_confidence=float(sensor_cfg.get("hand_tracking_confidence", 0.5)),
-    ) as hands_model:
+    with (
+        mp_pose.Pose(
+            min_detection_confidence=float(
+                sensor_cfg.get("pose_detection_confidence", 0.5)
+            ),
+            min_tracking_confidence=float(
+                sensor_cfg.get("pose_tracking_confidence", 0.5)
+            ),
+        ) as pose_model,
+        mp_hands.Hands(
+            max_num_hands=int(sensor_cfg.get("max_num_hands", 2)),
+            min_detection_confidence=float(
+                sensor_cfg.get("hand_detection_confidence", 0.5)
+            ),
+            min_tracking_confidence=float(
+                sensor_cfg.get("hand_tracking_confidence", 0.5)
+            ),
+        ) as hands_model,
+    ):
         print(
             "[INFO] camera loop started — "
             + ("fullscreen " if (debug_overlay and use_fullscreen) else "")
@@ -500,8 +531,14 @@ def run_camera_loop(
         )
         if debug_overlay:
             print("=" * 58, flush=True)
-            print(" Console shows [DRY_RUN] / [SEND_OK] lines as events fire (unbuffered: python -u).", flush=True)
-            print(f" Video window: {win_title!r} — HUD shows FPS, pose, hands, sequence, gestures.", flush=True)
+            print(
+                " Console shows [DRY_RUN] / [SEND_OK] lines as events fire (unbuffered: python -u).",
+                flush=True,
+            )
+            print(
+                f" Video window: {win_title!r} — HUD shows FPS, pose, hands, sequence, gestures.",
+                flush=True,
+            )
             print("=" * 58, flush=True)
         while True:
             ok, frame = cap.read()
@@ -543,7 +580,9 @@ def run_camera_loop(
                     f"[GESTURE] gesture={item.gesture} confidence={item.confidence}",
                     flush=True,
                 )
-                last_gesture_hud = f"Last gesture: {item.gesture} ({item.confidence:.0%})"
+                last_gesture_hud = (
+                    f"Last gesture: {item.gesture} ({item.confidence:.0%})"
+                )
                 client.emit(
                     "gesture.detected",
                     item.confidence,
@@ -571,7 +610,11 @@ def run_camera_loop(
                 last_heartbeat = now
 
             if debug_overlay:
-                send_mode = "DRY-RUN (events not sent)" if client.dry_run else "Sending events to VPS"
+                send_mode = (
+                    "DRY-RUN (events not sent)"
+                    if client.dry_run
+                    else "Sending events to VPS"
+                )
                 pose_ok = bool(pose_result.pose_landmarks)
                 n_hands = len(hands_result.multi_hand_landmarks or [])
                 hb_left = max(0.0, heartbeat_seconds - (now - last_heartbeat))
@@ -622,10 +665,157 @@ def run_camera_loop(
         cv2.destroyAllWindows()
 
 
+def run_jarvis_loop(config: dict[str, Any], jarvis_config_path: str) -> None:
+    """JARVIS assistant mode: camera + gesture detection routed through JARVIS plugins."""
+    if not JARVIS_AVAILABLE:
+        print(
+            "[JARVIS] plugins.jarvis not available. Ensure the plugins/jarvis/ directory exists.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    import cv2  # type: ignore
+    import mediapipe as mp  # type: ignore
+
+    sensor_cfg = config["sensor"]
+    camera_index = int(sensor_cfg.get("camera_index", 0))
+    mirror = bool(sensor_cfg.get("mirror_preview", True))
+
+    cap = open_video_capture(camera_index)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open camera index {camera_index}.")
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(sensor_cfg.get("frame_width", 640)))
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(sensor_cfg.get("frame_height", 480)))
+
+    mp_pose = mp.solutions.pose
+    mp_hands = mp.solutions.hands
+
+    gesture = GestureDetector(config.get("gesture", {}))
+    jarvis_cfg = load_config(jarvis_config_path)
+    orchestrator = JarvisOrchestrator(jarvis_cfg)
+    clap_detector = (
+        AudioClapDetector(jarvis_cfg.get("wakeup", {}))
+        if jarvis_cfg.get("wakeup", {}).get("enabled", True)
+        else None
+    )
+
+    font_scale, _ = _overlay_debug_cfg(config)
+    win_title = "JARVIS — gesture + audio assistant"
+    cv2.namedWindow(win_title, cv2.WINDOW_NORMAL)
+
+    print("[JARVIS] Starting…", flush=True)
+    print(orchestrator.system_prompt(), flush=True)
+    print("=" * 58, flush=True)
+
+    t_prev = time.perf_counter()
+    fps_ema = 0.0
+
+    with (
+        mp_pose.Pose(
+            min_detection_confidence=float(
+                sensor_cfg.get("pose_detection_confidence", 0.5)
+            ),
+            min_tracking_confidence=float(
+                sensor_cfg.get("pose_tracking_confidence", 0.5)
+            ),
+        ) as pose_model,
+        mp_hands.Hands(
+            max_num_hands=int(sensor_cfg.get("max_num_hands", 2)),
+            min_detection_confidence=float(
+                sensor_cfg.get("hand_detection_confidence", 0.5)
+            ),
+            min_tracking_confidence=float(
+                sensor_cfg.get("hand_tracking_confidence", 0.5)
+            ),
+        ) as hands_model,
+    ):
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                time.sleep(0.05)
+                continue
+
+            t_now = time.perf_counter()
+            dt = t_now - t_prev
+            t_prev = t_now
+            inst = 1.0 / dt if dt > 1e-6 else 0.0
+            fps_ema = inst if fps_ema <= 0 else 0.85 * fps_ema + 0.15 * inst
+
+            if mirror:
+                frame = cv2.flip(frame, 1)
+
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            rgb.flags.writeable = False
+            pose_result = pose_model.process(rgb)
+            hands_result = hands_model.process(rgb)
+            rgb.flags.writeable = True
+
+            now = time.time()
+            vision_gestures = gesture.update(now, pose_result, hands_result)
+
+            audio_gesture = None
+            if clap_detector:
+                audio_gesture = clap_detector.listen()
+
+            all_outputs: list[str] = []
+            for g in vision_gestures:
+                outputs = orchestrator.route_gesture(g.gesture, g.confidence)
+                all_outputs.extend(outputs)
+                for o in outputs:
+                    print(f"[JARVIS] {o}", flush=True)
+
+            if audio_gesture:
+                outputs = orchestrator.route_gesture(audio_gesture, 0.9)
+                all_outputs.extend(outputs)
+                for o in outputs:
+                    print(f"[JARVIS][AUDIO] {o}", flush=True)
+
+            tick_outputs = orchestrator.tick()
+            for o in tick_outputs:
+                print(f"[JARVIS] {o}", flush=True)
+                all_outputs.append(o)
+
+            pose_ok = bool(pose_result.pose_landmarks)
+            n_hands = len(hands_result.multi_hand_landmarks or [])
+            hud_lines = [
+                "JARVIS — desk assistant",
+                f"Camera {camera_index} | FPS ~{fps_ema:.0f}",
+                f"Pose: {'YES' if pose_ok else 'no'}  |  Hands: {n_hands}",
+            ]
+            if all_outputs:
+                hud_lines.append(f"Last: {all_outputs[-1][:72]}")
+            else:
+                hud_lines.append("Awaiting gesture or audio command…")
+            hud_lines.append(
+                "Gestures: arm_execute | confirm | pause | cancel | clap (audio)"
+            )
+
+            draw_accessible_hud(
+                frame,
+                hud_lines,
+                footer="Q or Esc = quit | JARVIS active",
+                font_scale=font_scale,
+            )
+            cv2.imshow(win_title, frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                break
+
+    if clap_detector:
+        clap_detector.close()
+    cap.release()
+    cv2.destroyAllWindows()
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="MediaPipe gesture + presence edge sensor")
+    parser = argparse.ArgumentParser(
+        description="MediaPipe gesture + presence edge sensor"
+    )
     parser.add_argument("--config", default="config.json", help="Path to config JSON")
-    parser.add_argument("--dry-run", action="store_true", help="Print events but do not send")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print events but do not send"
+    )
     parser.add_argument(
         "--debug-overlay",
         action="store_true",
@@ -668,6 +858,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Open the Windows Tkinter control panel (camera scan, preview, launch sensor)",
     )
+    parser.add_argument(
+        "--jarvis",
+        action="store_true",
+        help="Activate JARVIS assistant mode (plugins: wakeup, atmosphere, devshop, project)",
+    )
+    parser.add_argument(
+        "--jarvis-config",
+        type=str,
+        default="jarvis_config.json",
+        help="Path to JARVIS plugin config JSON",
+    )
     return parser.parse_args()
 
 
@@ -690,10 +891,16 @@ def main() -> None:
         run_camera_preview(config, fullscreen=args.fullscreen)
         return
 
+    if args.jarvis:
+        run_jarvis_loop(config, args.jarvis_config)
+        return
+
     client = build_client(config, dry_run=args.dry_run)
 
     if args.test_events:
-        run_test_events(client, cycles=args.test_cycles, sleep_seconds=args.test_sleep_seconds)
+        run_test_events(
+            client, cycles=args.test_cycles, sleep_seconds=args.test_sleep_seconds
+        )
         return
 
     run_camera_loop(

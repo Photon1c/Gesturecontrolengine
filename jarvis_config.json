@@ -1,0 +1,43 @@
+{
+  "enabled": true,
+  "wakeup": {
+    "enabled": true,
+    "double_clap_window_seconds": 1.5,
+    "vocal_readout": true,
+    "latitude": 0,
+    "longitude": 0,
+    "tts": {
+      "voice": "default",
+      "rate": 180
+    }
+  },
+  "atmosphere": {
+    "enabled": true,
+    "philips_hue": {
+      "bridge_ip": "",
+      "api_key": "",
+      "light_ids": [],
+      "focus_scene": "concentrate",
+      "relax_scene": "dimmed",
+      "energize_scene": "bright"
+    },
+    "spotify": {
+      "client_id": "",
+      "client_secret": "",
+      "device_id": "",
+      "playlists": {
+        "focus": "",
+        "relax": "",
+        "energize": ""
+      }
+    }
+  },
+  "devshop": {
+    "enabled": true,
+    "watch_directories": []
+  },
+  "project": {
+    "enabled": true,
+    "projects": []
+  }
+}

@@ -368,6 +368,34 @@ Detailed monitoring runbook for the assistant/agent is in:
 
 ---
 
+## JARVIS Assistant Mode (--jarvis)
+
+The handoff specification in `docs/handoff.md` describes a JARVIS-like butler-engineer
+system. This is implemented as modular plugins under `plugins/jarvis/`.
+
+### Plugins
+
+| Plugin | Gesture/Action | Capabilities |
+|--------|---------------|--------------|
+| Wakeup | Double hand clap (audio) | Activate monitors, TTS time/date/weather briefing |
+| Atmosphere | `focus` / `relax` / `energize` | Philips Hue lighting scenes, Spotify playlist switching |
+| Devshop | `status_check` | Git commit polling on watch directories |
+| Project | `deadline_update` / `ticket_update` | Deadline recalibration, overdue alerts |
+
+### Usage
+
+```bash
+pip install -r requirements.txt
+python sensor_engine.py --jarvis --jarvis-config jarvis_config.json --debug-overlay
+```
+
+Configure `jarvis_config.json` with your API keys, coordinates, project deadlines, and
+watch directories. All plugins are individually toggleable via `enabled: true/false`.
+
+The orchestrator routes visual gestures (arm_execute, confirm_execute, pause, cancel)
+and audio clap events through all active plugins. Plugin outputs are printed to console
+and shown in the HUD overlay.
+
 ## Notes for PixelTroupe / Conferenceroom Integration
 
 - Treat this app as a trusted-but-constrained edge sensor producer.
