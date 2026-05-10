@@ -17,7 +17,13 @@ bin-release/
 # should NOT be excluded as they contain compiler settings and other important
 # information for Eclipse / Flash Builder.
 
+# Local venv accidentally created in repo root
+.gestenv/
+
 # Python cache and local runtime artifacts
 __pycache__/
 *.py[cod]
 logs/
+
+# MediaPipe Tasks models (downloaded on first run; large binaries)
+models/*.task

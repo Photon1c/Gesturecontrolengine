@@ -16,6 +16,16 @@ pip install -U pip
 pip install -r requirements.txt
 ```
 
+**MediaPipe Tasks:** pose and hand tracking use the modern **Tasks** API (`PoseLandmarker` + `HandLandmarker`). On the first camera run, the app downloads **`.task` model files** into `./models/` (ignored by git). Use a normal **venv**; some Anaconda installs have broken MediaPipe native bindings—if you see ctypes or DLL errors, switch to `py -3.10 -m venv .venv`.
+
+Optional **`config.json`** keys (all under a top-level `"mediapipe"` object):
+
+| Field | Default | Purpose |
+|--------|---------|---------|
+| `model_dir` | `./models` (resolved from cwd) | Directory for `.task` files |
+| `pose_model` | `pose_landmarker_lite.task` | Filename under `model_dir` |
+| `hand_model` | `hand_landmarker.task` | Filename under `model_dir` |
+
 Edit **`config.json`**:
 
 | Field | Purpose |
@@ -161,7 +171,7 @@ python3 monitor_ingestion.py --log ./logs/vps_ingestion_decisions.jsonl --minute
 |---------|-------------------|
 | GUI health check fails | VPS down, wrong host/port, TLS/cert, firewall, or URL typo in `transport.endpoint` |
 | **`POST FAILED`** / **`[not_delivered]`** | Auth token/secret mismatch, wrong path, 401/403/404 from server |
-| **`Module 'mediapipe' has no attribute 'solutions'`** | Pin MediaPipe per **`requirements.txt`** (`mediapipe>=0.10.13,<0.10.31`); reinstall venv |
+| **MediaPipe / model errors** | `pip install -r requirements.txt` (Tasks API, `mediapipe>=0.10.14`); first run downloads `./models/*.task`; use a clean venv if Anaconda breaks native bindings |
 | Wrong or black camera | **`--list-cameras`**, set **`sensor.camera_index`**, try **Start preview** in the GUI |
 
 For full architecture, event schema, and policy details, see **README.md**.

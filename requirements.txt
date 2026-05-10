@@ -1,5 +1,5 @@
-# Classic Solutions API (mp.solutions.pose / hands) was removed in mediapipe 0.10.31+.
-mediapipe>=0.10.13,<0.10.31
+# MediaPipe Tasks API (PoseLandmarker + HandLandmarker). First run downloads models to ./models/
+mediapipe>=0.10.14
 numpy>=1.24
 opencv-python
 pillow>=10.0.0

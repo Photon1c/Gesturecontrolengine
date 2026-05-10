@@ -14,13 +14,14 @@ import sys
 import time
 from typing import Any
 
-# Before MediaPipe (or TensorFlow) loads — classic mp.solutions pulls TF lazily.
+# Before MediaPipe / TensorFlow load (Tasks runtime may pull TF).
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
 import numpy as np
 
 from event_client import EventClient
 from gesture_detector import GestureDetector
+from mediapipe_tasks import MediaPipeTasksVision, draw_tasks_landmarks
 from presence_detector import PresenceDetector
 
 try:
@@ -444,18 +445,10 @@ def run_camera_loop(
 ) -> None:
     try:
         import cv2  # type: ignore
-        import mediapipe as mp  # type: ignore
     except ImportError as exc:
         raise RuntimeError(
             "Missing dependencies for camera mode. Install requirements first."
         ) from exc
-
-    if not hasattr(mp, "solutions"):
-        raise RuntimeError(
-            "Installed mediapipe is missing the legacy Solutions API (mp.solutions). "
-            "Use a compatible version, e.g. pip install -r requirements.txt "
-            "(mediapipe>=0.10.13,<0.10.31)."
-        )
 
     sensor_cfg = config["sensor"]
     presence = PresenceDetector(config.get("presence", {}))
@@ -477,10 +470,6 @@ def run_camera_loop(
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(sensor_cfg.get("frame_width", 640)))
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(sensor_cfg.get("frame_height", 480)))
-
-    mp_pose = mp.solutions.pose
-    mp_hands = mp.solutions.hands
-    mp_drawing = mp.solutions.drawing_utils
 
     last_heartbeat = 0.0
     heartbeat_seconds = float(config["sensor"].get("heartbeat_seconds", 15))
@@ -504,29 +493,18 @@ def run_camera_loop(
     t_prev = time.perf_counter()
     last_gesture_hud = "Last gesture: —"
 
-    with (
-        mp_pose.Pose(
-            min_detection_confidence=float(
-                sensor_cfg.get("pose_detection_confidence", 0.5)
-            ),
-            min_tracking_confidence=float(
-                sensor_cfg.get("pose_tracking_confidence", 0.5)
-            ),
-        ) as pose_model,
-        mp_hands.Hands(
-            max_num_hands=int(sensor_cfg.get("max_num_hands", 2)),
-            min_detection_confidence=float(
-                sensor_cfg.get("hand_detection_confidence", 0.5)
-            ),
-            min_tracking_confidence=float(
-                sensor_cfg.get("hand_tracking_confidence", 0.5)
-            ),
-        ) as hands_model,
-    ):
+    mp_cfg = config.get("mediapipe") if isinstance(config.get("mediapipe"), dict) else None
+
+    with MediaPipeTasksVision(sensor_cfg, mp_cfg) as vision_tasks:
         print(
             "[INFO] camera loop started — "
             + ("fullscreen " if (debug_overlay and use_fullscreen) else "")
             + "press Q or Esc in the video window to quit",
+            flush=True,
+        )
+        print(
+            "[INFO] MediaPipe Tasks (PoseLandmarker + HandLandmarker); "
+            "models live under ./models/ (auto-download on first run).",
             flush=True,
         )
         if debug_overlay:
@@ -556,10 +534,7 @@ def run_camera_loop(
                 frame = cv2.flip(frame, 1)
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            rgb.flags.writeable = False
-            pose_result = pose_model.process(rgb)
-            hands_result = hands_model.process(rgb)
-            rgb.flags.writeable = True
+            pose_result, hands_result = vision_tasks.process(rgb)
 
             now = time.time()
             transition = presence.update(now, pose_result, hands_result)
@@ -641,19 +616,13 @@ def run_camera_loop(
                     draw_operator_legend(frame, font_scale)
 
                 if draw_landmarks:
-                    if pose_result.pose_landmarks:
-                        mp_drawing.draw_landmarks(
-                            frame,
-                            pose_result.pose_landmarks,
-                            mp_pose.POSE_CONNECTIONS,
-                        )
-                    if hands_result.multi_hand_landmarks:
-                        for hand in hands_result.multi_hand_landmarks:
-                            mp_drawing.draw_landmarks(
-                                frame,
-                                hand,
-                                mp_hands.HAND_CONNECTIONS,
-                            )
+                    draw_tasks_landmarks(
+                        frame,
+                        pose_result,
+                        hands_result,
+                        draw_pose=True,
+                        draw_hands=True,
+                    )
 
                 cv2.imshow(win_title, frame)
                 key = cv2.waitKey(1) & 0xFF
@@ -675,7 +644,6 @@ def run_jarvis_loop(config: dict[str, Any], jarvis_config_path: str) -> None:
         raise SystemExit(1)
 
     import cv2  # type: ignore
-    import mediapipe as mp  # type: ignore
 
     sensor_cfg = config["sensor"]
     camera_index = int(sensor_cfg.get("camera_index", 0))
@@ -687,9 +655,6 @@ def run_jarvis_loop(config: dict[str, Any], jarvis_config_path: str) -> None:
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(sensor_cfg.get("frame_width", 640)))
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(sensor_cfg.get("frame_height", 480)))
-
-    mp_pose = mp.solutions.pose
-    mp_hands = mp.solutions.hands
 
     gesture = GestureDetector(config.get("gesture", {}))
     jarvis_cfg = load_config(jarvis_config_path)
@@ -711,25 +676,9 @@ def run_jarvis_loop(config: dict[str, Any], jarvis_config_path: str) -> None:
     t_prev = time.perf_counter()
     fps_ema = 0.0
 
-    with (
-        mp_pose.Pose(
-            min_detection_confidence=float(
-                sensor_cfg.get("pose_detection_confidence", 0.5)
-            ),
-            min_tracking_confidence=float(
-                sensor_cfg.get("pose_tracking_confidence", 0.5)
-            ),
-        ) as pose_model,
-        mp_hands.Hands(
-            max_num_hands=int(sensor_cfg.get("max_num_hands", 2)),
-            min_detection_confidence=float(
-                sensor_cfg.get("hand_detection_confidence", 0.5)
-            ),
-            min_tracking_confidence=float(
-                sensor_cfg.get("hand_tracking_confidence", 0.5)
-            ),
-        ) as hands_model,
-    ):
+    mp_cfg = config.get("mediapipe") if isinstance(config.get("mediapipe"), dict) else None
+
+    with MediaPipeTasksVision(sensor_cfg, mp_cfg) as vision_tasks:
         while True:
             ok, frame = cap.read()
             if not ok:
@@ -746,10 +695,7 @@ def run_jarvis_loop(config: dict[str, Any], jarvis_config_path: str) -> None:
                 frame = cv2.flip(frame, 1)
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            rgb.flags.writeable = False
-            pose_result = pose_model.process(rgb)
-            hands_result = hands_model.process(rgb)
-            rgb.flags.writeable = True
+            pose_result, hands_result = vision_tasks.process(rgb)
 
             now = time.time()
             vision_gestures = gesture.update(now, pose_result, hands_result)
