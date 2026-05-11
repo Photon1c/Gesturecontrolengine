@@ -7,6 +7,7 @@ The gesture/presence modules expect objects shaped like the old Solutions API:
 
 from __future__ import annotations
 
+import sys
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,93 @@ HAND_MODEL_URL = (
 
 POSE_MODEL_FILENAME = "pose_landmarker_lite.task"
 HAND_MODEL_FILENAME = "hand_landmarker.task"
+
+_MEDIAPIPE_WINDOWS_NATIVE_HINT = """
+MediaPipe Tasks could not load its native DLL correctly on this Python install.
+
+Common cause: the venv was created with Anaconda/Miniconda. A folder named .venv or
+.gestenv does not help — the *base* Python that created the venv must be python.org
+CPython. Your traceback used Anaconda's ctypes (D:\\...\\Anaconda\\Lib\\ctypes).
+
+Diagnostics:
+  Interpreter: {exe}
+  sys.prefix:  {prefix}
+  pyvenv.cfg:  {pyvenv_hint}
+
+Fix (do this exactly):
+  1. Install 64-bit CPython 3.10 or 3.11 from https://www.python.org/downloads/
+     (check "Add python.exe to PATH" or note the install path).
+  2. List interpreters — the python.org line must NOT be under Anaconda:
+       py -0p
+  3. Create a NEW venv using the FULL path to python.org (example):
+       & "$env:LOCALAPPDATA\\Programs\\Python\\Python311\\python.exe" -m venv .venv
+     If that path does not exist, use the path shown by py -0p for "Python 3.11" etc.
+  4. REMOVE old broken envs so you do not accidentally activate them:
+       # optional: rmdir /s /q .gestenv
+  5. Activate ONLY the new venv:
+       .\\.venv\\Scripts\\activate
+       python -c "import sys; print(sys.executable)"   # must be ...\\.venv\\Scripts\\python.exe
+       pip install -U pip
+       pip install -r requirements.txt
+  6. Run: python sensor_engine.py --debug-overlay
+
+Also install the latest "Microsoft Visual C++ Redistributable" if problems persist.
+Run: python scripts/diagnose_mediapipe_env.py
+"""
+
+
+def _pyvenv_cfg_hint() -> str:
+    cfg = Path(sys.prefix) / "pyvenv.cfg"
+    if not cfg.is_file():
+        return "(no pyvenv.cfg — not a venv, or unusual layout)"
+    lines: list[str] = []
+    for raw in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if line.lower().startswith("home"):
+            lines.append(line)
+        elif line.lower().startswith("executable"):
+            lines.append(line)
+    if not lines:
+        return str(cfg)
+    return "; ".join(lines)
+
+
+def _venv_home_is_conda() -> bool:
+    cfg = Path(sys.prefix) / "pyvenv.cfg"
+    if not cfg.is_file():
+        return False
+    text = cfg.read_text(encoding="utf-8", errors="replace").lower()
+    for line in text.splitlines():
+        ls = line.strip().lower()
+        if ls.startswith("home ="):
+            home = ls.split("=", 1)[1].strip()
+            return any(x in home for x in ("conda", "anaconda", "miniconda"))
+    return "conda" in text
+
+
+def _is_likely_conda_python() -> bool:
+    exe = sys.executable.lower()
+    if any(x in exe for x in ("conda", "miniconda", "anaconda")):
+        return True
+    if "conda" in sys.prefix.lower():
+        return True
+    return _venv_home_is_conda()
+
+
+def _wrap_mediapipe_native_errors(exc: BaseException) -> None:
+    """Re-raise with a short operator hint when Tasks native bindings fail."""
+    msg = str(exc).lower()
+    detail = _MEDIAPIPE_WINDOWS_NATIVE_HINT.format(
+        exe=sys.executable,
+        prefix=sys.prefix,
+        pyvenv_hint=_pyvenv_cfg_hint(),
+    )
+    if "free" in msg and "not found" in msg:
+        raise RuntimeError(detail) from exc
+    if _is_likely_conda_python() and isinstance(exc, (AttributeError, OSError)):
+        raise RuntimeError(detail) from exc
+    raise exc
+
 
 # BlazePose 33-landmark topology (same indices as legacy pose)
 POSE_CONNECTIONS: frozenset[tuple[int, int]] = frozenset(
@@ -189,9 +277,17 @@ def _import_tasks() -> tuple[Any, Any, Any, Any, Any, Any]:
 
 
 class MediaPipeTasksVision:
-    """VIDEO-mode Pose + Hand landmarkers; exposes legacy-shaped results per frame."""
+    """VIDEO-mode Pose + Hand landmarkers; exposes legacy-shaped results per frame.
+
+    Performance knobs (via sensor_cfg or mp_cfg):
+      - inference_scale: fraction to downscale before ML (e.g. 0.5 = half-res). Default 0.5.
+      - hand_skip_n: only run hand landmarker every N frames. Default 1 (every frame).
+      - skip_hands_without_pose: skip hand detection when pose is absent. Default True.
+    """
 
     def __init__(self, sensor_cfg: dict[str, Any], mp_cfg: Optional[dict[str, Any]] = None) -> None:
+        import time as _time
+
         mp_cfg = mp_cfg or {}
         model_dir = Path(mp_cfg.get("model_dir", default_model_dir()))
         if not model_dir.is_absolute():
@@ -244,9 +340,18 @@ class MediaPipeTasksVision:
             min_tracking_confidence=h_trk,
         )
 
-        self._pose = PoseLandmarker.create_from_options(pose_opts)
-        self._hands = HandLandmarker.create_from_options(hand_opts)
-        self._ts_ms = 0
+        try:
+            self._pose = PoseLandmarker.create_from_options(pose_opts)
+            self._hands = HandLandmarker.create_from_options(hand_opts)
+        except (AttributeError, OSError) as exc:
+            _wrap_mediapipe_native_errors(exc)
+
+        self._t0_ms = int(_time.perf_counter() * 1000)
+        self._inference_scale = float(mp_cfg.get("inference_scale", 0.5))
+        self._hand_skip_n = max(1, int(mp_cfg.get("hand_skip_n", 1)))
+        self._skip_hands_without_pose = bool(mp_cfg.get("skip_hands_without_pose", True))
+        self._frame_idx = 0
+        self._last_hands = _HandsResult([])
 
     def __enter__(self) -> MediaPipeTasksVision:
         return self
@@ -258,28 +363,54 @@ class MediaPipeTasksVision:
         self._pose.close()
         self._hands.close()
 
+    def _downscale(self, rgb: np.ndarray) -> np.ndarray:
+        s = self._inference_scale
+        if s >= 0.99:
+            return rgb
+        import cv2
+        h, w = rgb.shape[:2]
+        new_w, new_h = max(1, int(w * s)), max(1, int(h * s))
+        return cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
     def process(self, rgb_uint8: np.ndarray) -> tuple[_PoseResult, _HandsResult]:
-        """rgb_uint8: HxWx3 RGB. Returns legacy-shaped pose/hands wrappers."""
-        self._ts_ms += 33
-        if not rgb_uint8.flags.c_contiguous:
-            rgb_uint8 = np.ascontiguousarray(rgb_uint8)
+        """rgb_uint8: HxWx3 RGB at full camera resolution.
+
+        Internally downscales for inference (normalized landmarks are scale-invariant).
+        """
+        import time as _time
+
+        ts_ms = int(_time.perf_counter() * 1000) - self._t0_ms
+        ts_ms = max(1, ts_ms)
+
+        small = self._downscale(rgb_uint8)
+        if not small.flags.c_contiguous:
+            small = np.ascontiguousarray(small)
+
         mp_image = self._mp.Image(
-            image_format=self._mp.ImageFormat.SRGB, data=rgb_uint8
+            image_format=self._mp.ImageFormat.SRGB, data=small
         )
 
-        pr = self._pose.detect_for_video(mp_image, self._ts_ms)
-        hr = self._hands.detect_for_video(mp_image, self._ts_ms)
-
+        pr = self._pose.detect_for_video(mp_image, ts_ms)
         pose_ll: Optional[_LandmarkList] = None
         if pr.pose_landmarks and len(pr.pose_landmarks) > 0:
             pose_ll = _LandmarkList(_pose_proto_to_list(pr.pose_landmarks[0]))
 
-        hand_lists: list[_LandmarkList] = []
-        if hr.hand_landmarks:
-            for hl in hr.hand_landmarks:
-                hand_lists.append(_LandmarkList(_hand_proto_to_list(hl)))
+        self._frame_idx += 1
+        run_hands = True
+        if self._skip_hands_without_pose and pose_ll is None:
+            run_hands = False
+        if run_hands and self._hand_skip_n > 1 and (self._frame_idx % self._hand_skip_n) != 0:
+            run_hands = False
 
-        return _PoseResult(pose_ll), _HandsResult(hand_lists)
+        if run_hands:
+            hr = self._hands.detect_for_video(mp_image, ts_ms)
+            hand_lists: list[_LandmarkList] = []
+            if hr.hand_landmarks:
+                for hl in hr.hand_landmarks:
+                    hand_lists.append(_LandmarkList(_hand_proto_to_list(hl)))
+            self._last_hands = _HandsResult(hand_lists)
+
+        return _PoseResult(pose_ll), self._last_hands
 
 
 def draw_pose_connections(

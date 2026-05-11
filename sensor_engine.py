@@ -219,6 +219,11 @@ def _overlay_debug_cfg(config: dict[str, Any]) -> tuple[float, bool]:
     return scale, fullscreen
 
 
+def _darken_roi(roi: np.ndarray, alpha: float = 0.25) -> None:
+    """In-place darken using integer math — avoids np.full_like + addWeighted allocation."""
+    np.multiply(roi, alpha, out=roi, casting="unsafe")
+
+
 def draw_accessible_hud(
     frame: np.ndarray,
     lines: list[str],
@@ -235,9 +240,7 @@ def draw_accessible_hud(
     banner_h = margin * 2 + len(lines) * line_h + 6
     banner_h = min(banner_h, h // 2)
 
-    roi = frame[0:banner_h, 0:w]
-    tint = np.full_like(roi, (28, 28, 28))
-    roi[:] = cv2.addWeighted(roi, 0.25, tint, 0.75, 0)
+    _darken_roi(frame[0:banner_h, 0:w], 0.25)
 
     y = margin + int(26 * font_scale)
     for line in lines:
@@ -253,12 +256,9 @@ def draw_accessible_hud(
         )
         y += line_h
 
-    # Footer strip along bottom
     fh = int(36 * font_scale) + margin
     y0 = max(0, h - fh)
-    froi = frame[y0:h, 0:w]
-    ftint = np.full_like(froi, (22, 22, 22))
-    froi[:] = cv2.addWeighted(froi, 0.35, ftint, 0.65, 0)
+    _darken_roi(frame[y0:h, 0:w], 0.35)
     cv2.putText(
         frame,
         footer,
@@ -328,8 +328,7 @@ def draw_operator_legend(frame: np.ndarray, font_scale: float) -> None:
     roi = frame[y0 : y0 + panel_h, x0 : w - margin]
     if roi.size == 0:
         return
-    tint = np.full_like(roi, (20, 24, 20))
-    roi[:] = cv2.addWeighted(roi, 0.35, tint, 0.65, 0)
+    _darken_roi(roi, 0.35)
 
     y = y0 + margin + int(18 * fs)
     for i, line in enumerate(lines):

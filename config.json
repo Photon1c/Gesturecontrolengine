@@ -72,6 +72,11 @@
     "sequence_file": "./logs/sequence_state.json",
     "replay_jsonl": "./logs/sensor_events.jsonl"
   },
+  "mediapipe": {
+    "inference_scale": 0.5,
+    "hand_skip_n": 2,
+    "skip_hands_without_pose": true
+  },
   "debug": {
     "draw_landmarks": true,
     "show_operator_legend": true,

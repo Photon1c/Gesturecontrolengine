@@ -25,6 +25,9 @@ Optional **`config.json`** keys (all under a top-level `"mediapipe"` object):
 | `model_dir` | `./models` (resolved from cwd) | Directory for `.task` files |
 | `pose_model` | `pose_landmarker_lite.task` | Filename under `model_dir` |
 | `hand_model` | `hand_landmarker.task` | Filename under `model_dir` |
+| `inference_scale` | `0.5` | Fraction to downscale before ML (0.5 = half-res, ~2x faster) |
+| `hand_skip_n` | `2` | Run hand landmarker every N frames (reuses last result between) |
+| `skip_hands_without_pose` | `true` | Skip hand detection when no pose is found (saves ~40% per frame) |
 
 Edit **`config.json`**:
 
@@ -171,7 +174,8 @@ python3 monitor_ingestion.py --log ./logs/vps_ingestion_decisions.jsonl --minute
 |---------|-------------------|
 | GUI health check fails | VPS down, wrong host/port, TLS/cert, firewall, or URL typo in `transport.endpoint` |
 | **`POST FAILED`** / **`[not_delivered]`** | Auth token/secret mismatch, wrong path, 401/403/404 from server |
-| **MediaPipe / model errors** | `pip install -r requirements.txt` (Tasks API, `mediapipe>=0.10.14`); first run downloads `./models/*.task`; use a clean venv if Anaconda breaks native bindings |
+| **MediaPipe / model errors** | `pip install -r requirements.txt` (Tasks API, `mediapipe>=0.10.14`); first run downloads `./models/*.task` |
+| **`AttributeError: function 'free' not found`** (often in `mediapipe_c_bindings.py`) | Your venv was almost certainly created with **Conda’s** Python (even if the folder is named `.gestenv` or `.venv`). **Recreate the venv using the full path** to **python.org** CPython — `py -3.10` may still point at Conda. Run **`python scripts/diagnose_mediapipe_env.py`** after `activate`; if `pyvenv.cfg` has `home = ...Anaconda...`, delete that venv and follow the error message’s steps. Install **VC++ Redistributable** if it still fails. |
 | Wrong or black camera | **`--list-cameras`**, set **`sensor.camera_index`**, try **Start preview** in the GUI |
 
 For full architecture, event schema, and policy details, see **README.md**.
