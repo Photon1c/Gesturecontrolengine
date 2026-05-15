@@ -2,7 +2,7 @@
 
 ![wakeup](media/wakeup.gif)
 
-MediaPipe-based edge sensor app that runs on **Windows**, uses the webcam locally, and sends **metadata-only events** to a VPS endpoint for policy-based workflow triggering.
+MediaPipe-based edge sensor app that runs on **Windows**, uses the webcam locally, and sends **metadata-only events** to a VPS endpoint for policy-based workflow triggering. Inference uses the **MediaPipe Tasks** vision API (pose + hands); see `mediapipe_tasks.py`.
 
 ## Safety and MVP Scope
 
@@ -24,16 +24,20 @@ Out of scope for this MVP:
 
 ## File Structure
 
-- `sensor_engine.py` — main loop, camera mode, dry-run, test-event mode
+- `sensor_engine.py` — main loop, camera mode, dry-run, test-event mode, OpenCV debug overlay
+- `mediapipe_tasks.py` — MediaPipe **Tasks** API (Pose + Hand landmarkers); model files under `models/`
+- `desktop_gui.py` — optional Tkinter control panel (camera scan, preview, VPS health check, launch sensor)
 - `presence_detector.py` — debounced presence state detection
 - `gesture_detector.py` — deliberate gesture detection with cooldowns
 - `event_client.py` — authenticated HTTP event transport + retry + sequence
 - `vps_ingestion.py` — VPS ingestion + policy gate + workflow trigger guard
 - `monitor_ingestion.py` — lightweight decision-log monitoring utility
-- `config.json` — all thresholds, endpoint, auth, and logging paths
+- `config.json` — all thresholds, endpoint, auth, logging paths, debug overlay, MediaPipe performance knobs
 - `requirements.txt` — Python dependencies
 - `vps_config.json` — VPS policy/auth/runtime configuration
 - `requirements-vps.txt` — VPS-only dependencies
+- `quickstart.md` — step-by-step Windows + VPS setup, connectivity checks, troubleshooting (Anaconda/MediaPipe, TLS)
+- `scripts/diagnose_mediapipe_env.py` — quick check that Python is suitable for MediaPipe on Windows
 - `AGENT_MONITORING.md` — runbook for the monitoring agent
 - `deploy/systemd/conferenceroom-sensor-ingestion.service` — default systemd unit
 - `scripts/install_systemd_service.sh` — systemd installer/generator script
@@ -41,6 +45,8 @@ Out of scope for this MVP:
 ---
 
 ## Quick Start (Windows)
+
+Use **64-bit CPython from [python.org](https://www.python.org/downloads/)** (3.10 or 3.11 recommended) and a **venv created with that interpreter**. MediaPipe’s native libraries often fail on Windows when the venv is based on Anaconda/Miniconda (`function 'free' not found`, etc.). See **`quickstart.md`** for full setup, GUI walkthrough, and troubleshooting.
 
 ### 1) Python setup
 
@@ -50,14 +56,21 @@ py -3.11 -m venv .venv
 pip install -r requirements.txt
 ```
 
+Optional: verify the environment:
+
+```powershell
+python scripts/diagnose_mediapipe_env.py
+```
+
 ### 2) Configure endpoint + auth
 
 Edit `config.json`:
 
-- `transport.endpoint` (example: `https://<vps>/conferenceroom/sensors/event`)
+- `transport.endpoint` — must match how the VPS listens. If the service is plain HTTP on port 8000, use `http://...`; using `https://` against an HTTP port causes TLS errors (e.g. `WRONG_VERSION_NUMBER`).
 - `transport.auth.type` (`bearer` or `shared_secret`)
 - `transport.auth.token` or `transport.auth.secret`
 - `sensor.sensor_id` (example: `desk_cam_1`)
+- `sensor.camera_index` — set after `python sensor_engine.py --list-cameras` if the wrong device opens
 
 ### 3) Dry-run first (no network sends)
 
@@ -71,7 +84,37 @@ python sensor_engine.py --dry-run --test-events --test-cycles 2
 python sensor_engine.py --debug-overlay
 ```
 
-Press `q` in the overlay window to exit.
+Use **`--fullscreen`** for a fullscreen window. Press **`q`** or **Esc** in the overlay window to exit.
+
+Other useful CLI flags:
+
+- `python sensor_engine.py --list-cameras` — print indices that open successfully
+- `python sensor_engine.py --camera-preview` — live desk cam only (no MediaPipe, no network)
+
+### 5) Desktop GUI (optional)
+
+```powershell
+python desktop_gui.py
+```
+
+From the GUI you can scan cameras, preview video, save `config.json` selections, **GET `/healthz`** against the VPS host derived from `transport.endpoint`, tail recent lines from `logging.replay_jsonl`, and launch the sensor with **`python -u`** in a new console so logs appear immediately.
+
+### Debug overlay and HUD (`config.json` → `debug`)
+
+The OpenCV window defaults to a **larger** size (`default_window_width` / `default_window_height`, e.g. 1280×720) so the video does not fill the whole window; the camera resolution stays under `sensor.frame_width` / `frame_height`.
+
+**Compact HUD** (default `compact_hud: true`) keeps the top status band and gesture legend small so they cover less of the frame. Tune as needed:
+
+| Key | Role |
+|-----|------|
+| `overlay_font_scale` | HUD / legend text size |
+| `compact_hud` | `true` = condensed lines + tighter banner; `false` = verbose multi-line HUD |
+| `default_window_width` / `default_window_height` | Initial OpenCV window size (not capture resolution) |
+| `fullscreen_overlay` | Start overlay fullscreen |
+| `draw_landmarks` | Draw pose/hand landmarks on the preview |
+| `show_operator_legend` | Right-side gesture cheat sheet |
+
+Performance-related **`mediapipe`** keys (optional): `inference_scale`, `hand_skip_n`, `skip_hands_without_pose` — see `quickstart.md` for behavior.
 
 ---
 
@@ -394,7 +437,7 @@ watch directories. All plugins are individually toggleable via `enabled: true/fa
 
 The orchestrator routes visual gestures (arm_execute, confirm_execute, pause, cancel)
 and audio clap events through all active plugins. Plugin outputs are printed to console
-and shown in the HUD overlay.
+and shown in the HUD overlay (same compact/large-window `debug` options as the main sensor).
 
 ## Notes for PixelTroupe / Conferenceroom Integration
 
