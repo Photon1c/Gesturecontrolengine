@@ -80,7 +80,10 @@
   "debug": {
     "draw_landmarks": true,
     "show_operator_legend": true,
-    "overlay_font_scale": 0.95,
-    "fullscreen_overlay": false
+    "overlay_font_scale": 0.64,
+    "fullscreen_overlay": false,
+    "default_window_width": 1280,
+    "default_window_height": 720,
+    "compact_hud": true
   }
 }

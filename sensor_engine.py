@@ -12,7 +12,7 @@ from pathlib import Path
 import platform
 import sys
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 # Before MediaPipe / TensorFlow load (Tasks runtime may pull TF).
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
@@ -212,11 +212,46 @@ def run_list_cameras(max_index: int = 10) -> None:
     print("Set sensor.camera_index to the index that shows your desk.", flush=True)
 
 
-def _overlay_debug_cfg(config: dict[str, Any]) -> tuple[float, bool]:
-    dbg = config.get("debug", {})
-    scale = float(dbg.get("overlay_font_scale", 0.85))
-    fullscreen = bool(dbg.get("fullscreen_overlay", False))
-    return scale, fullscreen
+class OverlayUiConfig(NamedTuple):
+    font_scale: float
+    fullscreen: bool
+    window_width: int
+    window_height: int
+    compact_hud: bool
+
+
+def overlay_ui_config(config: dict[str, Any]) -> OverlayUiConfig:
+    dbg = config.get("debug", {}) if isinstance(config.get("debug"), dict) else {}
+    return OverlayUiConfig(
+        font_scale=float(dbg.get("overlay_font_scale", 0.64)),
+        fullscreen=bool(dbg.get("fullscreen_overlay", False)),
+        window_width=int(dbg.get("default_window_width", 1280)),
+        window_height=int(dbg.get("default_window_height", 720)),
+        compact_hud=bool(dbg.get("compact_hud", True)),
+    )
+
+
+def _truncate_hud_line(text: str, max_chars: int) -> str:
+    t = text.strip()
+    if len(t) <= max_chars:
+        return t
+    if max_chars <= 3:
+        return t[:max_chars]
+    return t[: max_chars - 3] + "..."
+
+
+def _resize_debug_window(win: str, ui: OverlayUiConfig, *, fullscreen: bool) -> None:
+    """Open a comfortably large window; actual video resolution stays in the frame."""
+    import cv2  # type: ignore
+
+    if fullscreen:
+        return
+    w = max(480, ui.window_width)
+    h = max(360, ui.window_height)
+    try:
+        cv2.resizeWindow(win, w, h)
+    except Exception:
+        pass
 
 
 def _darken_roi(roi: np.ndarray, alpha: float = 0.25) -> None:
@@ -230,19 +265,33 @@ def draw_accessible_hud(
     *,
     footer: str,
     font_scale: float,
-    margin: int = 14,
+    compact: bool = True,
 ) -> None:
     """High-contrast top banner + footer so operators can read status at a glance."""
     import cv2  # type: ignore
 
     h, w = frame.shape[:2]
-    line_h = int(32 * font_scale) + 8
-    banner_h = margin * 2 + len(lines) * line_h + 6
-    banner_h = min(banner_h, h // 2)
+    if compact:
+        margin = 8
+        line_h = int(20 * font_scale) + 4
+        y0_text = margin + int(18 * font_scale)
+        footer_fs = font_scale * 0.88
+        thick = 1
+        max_banner_frac = 0.28
+        fh = int(24 * font_scale) + margin + 6
+    else:
+        margin = 14
+        line_h = int(32 * font_scale) + 8
+        y0_text = margin + int(26 * font_scale)
+        footer_fs = font_scale * 0.95
+        thick = 2
+        max_banner_frac = 0.45
+    banner_h = margin * 2 + len(lines) * line_h + 4
+    banner_h = min(banner_h, int(h * max_banner_frac))
 
     _darken_roi(frame[0:banner_h, 0:w], 0.25)
 
-    y = margin + int(26 * font_scale)
+    y = y0_text
     for line in lines:
         cv2.putText(
             frame,
@@ -251,37 +300,40 @@ def draw_accessible_hud(
             cv2.FONT_HERSHEY_DUPLEX,
             font_scale,
             (255, 255, 255),
-            2,
+            thick,
             cv2.LINE_AA,
         )
         y += line_h
 
-    fh = int(36 * font_scale) + margin
     y0 = max(0, h - fh)
     _darken_roi(frame[y0:h, 0:w], 0.35)
     cv2.putText(
         frame,
         footer,
-        (margin, h - margin - 4),
+        (margin, h - margin - 3),
         cv2.FONT_HERSHEY_DUPLEX,
-        font_scale * 0.95,
+        footer_fs,
         (180, 255, 180),
-        2,
+        thick,
         cv2.LINE_AA,
     )
 
 
-def draw_mode_badge(frame: np.ndarray, *, dry_run: bool, font_scale: float) -> None:
+def draw_mode_badge(
+    frame: np.ndarray, *, dry_run: bool, font_scale: float, compact: bool = True
+) -> None:
     """Top-right corner: obvious DRY vs LIVE indicator."""
     import cv2  # type: ignore
 
     h, w = frame.shape[:2]
     text = "  DRY RUN (no HTTP)  " if dry_run else "  LIVE -> VPS  "
-    fs = max(0.45, font_scale * 0.55)
-    thick = 2
+    mul = 0.48 if compact else 0.55
+    fs = max(0.4, font_scale * mul)
+    thick = 1 if compact else 2
     (tw, th), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, fs, thick)
-    pad = 10
-    x1, y1 = w - pad, int(36 * font_scale) + th + pad
+    pad = 8 if compact else 10
+    top_y = int(26 * font_scale) if compact else int(36 * font_scale)
+    x1, y1 = w - pad, top_y + th + pad
     x0 = x1 - tw - pad * 2
     y0 = y1 - th - pad - baseline
     color = (0, 165, 255) if dry_run else (60, 200, 80)
@@ -299,29 +351,42 @@ def draw_mode_badge(frame: np.ndarray, *, dry_run: bool, font_scale: float) -> N
     )
 
 
-def draw_operator_legend(frame: np.ndarray, font_scale: float) -> None:
+def draw_operator_legend(
+    frame: np.ndarray, font_scale: float, *, compact: bool = True
+) -> None:
     """Right-side cheat sheet for deliberate gestures (MVP)."""
     import cv2  # type: ignore
 
     h, w = frame.shape[:2]
-    lines = [
-        "GESTURES",
-        "Arms up (shoulders)",
-        "  arm_execute",
-        "Two-hand pinch",
-        "  confirm_execute",
-        "Open palm",
-        "  pause",
-        "Cross wrists",
-        "  cancel",
-    ]
-    fs = max(0.38, font_scale * 0.48)
-    line_h = int(20 * fs) + 5
-    margin = 10
-    panel_w = min(int(260 * max(1.0, font_scale / 0.85)), w // 3)
+    if compact:
+        lines = [
+            "GESTURES",
+            "Arms up -> arm_execute",
+            "Pinch -> confirm",
+            "Open palm -> pause",
+            "Cross wrists -> cancel",
+        ]
+    else:
+        lines = [
+            "GESTURES",
+            "Arms up (shoulders)",
+            "  arm_execute",
+            "Two-hand pinch",
+            "  confirm_execute",
+            "Open palm",
+            "  pause",
+            "Cross wrists",
+            "  cancel",
+        ]
+    mul = 0.4 if compact else 0.48
+    fs = max(0.32, font_scale * mul)
+    line_h = int(15 * fs) + (3 if compact else 5)
+    margin = 8 if compact else 10
+    base_w = 168 if compact else 260
+    panel_w = min(int(base_w * max(1.0, font_scale / 0.64)), w // 4 if compact else w // 3)
     panel_h = margin * 2 + len(lines) * line_h
     x0 = max(0, w - panel_w - margin)
-    footer_reserve = int(42 * font_scale) + 28
+    footer_reserve = int(28 * font_scale) + (18 if compact else 28)
     y0 = h - panel_h - footer_reserve - margin
     y0 = max(margin, y0)
 
@@ -366,9 +431,12 @@ def run_camera_preview(config: dict[str, Any], *, fullscreen: bool) -> None:
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(sensor_cfg.get("frame_height", 480)))
 
     win = "Desk cam — preview (no AI, no network)"
+    ui = overlay_ui_config(config)
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     if fullscreen:
         cv2.setWindowProperty(win, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    else:
+        _resize_debug_window(win, ui, fullscreen=False)
 
     print(
         "[PREVIEW] Live video only. Adjust config sensor.camera_index if this is the wrong device.\n"
@@ -388,16 +456,25 @@ def run_camera_preview(config: dict[str, Any], *, fullscreen: bool) -> None:
         if mirror:
             frame = cv2.flip(frame, 1)
 
-        font_scale, _ = _overlay_debug_cfg(config)
-        draw_accessible_hud(
-            frame,
-            [
+        if ui.compact_hud:
+            hud_lines = [
+                f"Preview | cam {camera_index} | no AI / no VPS",
+                "Use --debug-overlay for sensor + overlay",
+            ]
+            footer = "Q/Esc quit"
+        else:
+            hud_lines = [
                 "GESTURECONTROLENGINE — camera preview",
                 f"Camera index {camera_index} — LIVE",
                 "No pose/hands; no data sent to VPS",
-            ],
-            footer="Q or Esc = quit   |   Use --debug-overlay for AI + overlay",
-            font_scale=font_scale,
+            ]
+            footer = "Q or Esc = quit   |   Use --debug-overlay for AI + overlay"
+        draw_accessible_hud(
+            frame,
+            hud_lines,
+            footer=footer,
+            font_scale=ui.font_scale,
+            compact=ui.compact_hud,
         )
         cv2.imshow(win, frame)
         key = cv2.waitKey(1) & 0xFF
@@ -477,8 +554,9 @@ def run_camera_loop(
     show_operator_legend = bool(
         config.get("debug", {}).get("show_operator_legend", True)
     )
-    font_scale, cfg_fullscreen = _overlay_debug_cfg(config)
-    use_fullscreen = fullscreen or cfg_fullscreen
+    ui = overlay_ui_config(config)
+    font_scale = ui.font_scale
+    use_fullscreen = fullscreen or ui.fullscreen
 
     win_title = "Desk cam — sensor + AI (local preview)"
     if debug_overlay:
@@ -487,6 +565,8 @@ def run_camera_loop(
             cv2.setWindowProperty(
                 win_title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN
             )
+        else:
+            _resize_debug_window(win_title, ui, fullscreen=False)
 
     fps_ema = 0.0
     t_prev = time.perf_counter()
@@ -584,35 +664,64 @@ def run_camera_loop(
                 last_heartbeat = now
 
             if debug_overlay:
-                send_mode = (
-                    "DRY-RUN (events not sent)"
-                    if client.dry_run
-                    else "Sending events to VPS"
-                )
                 pose_ok = bool(pose_result.pose_landmarks)
                 n_hands = len(hands_result.multi_hand_landmarks or [])
                 hb_left = max(0.0, heartbeat_seconds - (now - last_heartbeat))
-                hud_lines = [
-                    "GESTURECONTROLENGINE — desk sensor",
-                    f"Camera {camera_index} | {send_mode}",
-                    client.vps_link_line,
-                    f"FPS ~{fps_ema:.0f}  |  Pose: {'YES' if pose_ok else 'no'}  |  Hands: {n_hands}",
-                    f"Sequence: {client.last_sequence}  |  Heartbeat in ~{int(hb_left)}s",
-                    f"Presence: {presence.state}  |  Arm: {machine.state}",
-                    last_gesture_hud,
-                    f"Sensor ID: {sensor_cfg.get('sensor_id')}",
-                    "Video stays on this PC — only metadata is sent",
-                ]
-                lm = "ON" if draw_landmarks else "OFF (config debug.draw_landmarks)"
+                fw = frame.shape[1]
+                link_budget = max(42, fw // 8)
+                link = _truncate_hud_line(client.vps_link_line, link_budget)
+                gesture_line = last_gesture_hud
+                if ui.compact_hud:
+                    gesture_line = _truncate_hud_line(gesture_line, max(36, fw // 16))
+
+                if ui.compact_hud:
+                    send_tag = "DRY" if client.dry_run else "LIVE"
+                    hud_lines = [
+                        f"Desk sensor | cam{camera_index} | {send_tag} | seq {client.last_sequence}",
+                        link,
+                        f"FPS~{fps_ema:.0f} | pose:{'yes' if pose_ok else 'no'} | hands:{n_hands} | HB~{int(hb_left)}s",
+                        f"{presence.state} | arm:{machine.state} | {gesture_line}",
+                        f"ID {sensor_cfg.get('sensor_id')} | metadata only | LM {'on' if draw_landmarks else 'off'}",
+                    ]
+                    lm_short = "on" if draw_landmarks else "off"
+                    footer = f"LM {lm_short} | Q/Esc quit"
+                else:
+                    send_mode = (
+                        "DRY-RUN (events not sent)"
+                        if client.dry_run
+                        else "Sending events to VPS"
+                    )
+                    hud_lines = [
+                        "GESTURECONTROLENGINE — desk sensor",
+                        f"Camera {camera_index} | {send_mode}",
+                        client.vps_link_line,
+                        f"FPS ~{fps_ema:.0f}  |  Pose: {'YES' if pose_ok else 'no'}  |  Hands: {n_hands}",
+                        f"Sequence: {client.last_sequence}  |  Heartbeat in ~{int(hb_left)}s",
+                        f"Presence: {presence.state}  |  Arm: {machine.state}",
+                        last_gesture_hud,
+                        f"Sensor ID: {sensor_cfg.get('sensor_id')}",
+                        "Video stays on this PC — only metadata is sent",
+                    ]
+                    lm = "ON" if draw_landmarks else "OFF (config debug.draw_landmarks)"
+                    footer = f"Landmarks {lm}  |  Q or Esc = quit"
+
                 draw_accessible_hud(
                     frame,
                     hud_lines,
-                    footer=f"Landmarks {lm}  |  Q or Esc = quit",
+                    footer=footer,
                     font_scale=font_scale,
+                    compact=ui.compact_hud,
                 )
-                draw_mode_badge(frame, dry_run=client.dry_run, font_scale=font_scale)
+                draw_mode_badge(
+                    frame,
+                    dry_run=client.dry_run,
+                    font_scale=font_scale,
+                    compact=ui.compact_hud,
+                )
                 if show_operator_legend:
-                    draw_operator_legend(frame, font_scale)
+                    draw_operator_legend(
+                        frame, font_scale, compact=ui.compact_hud
+                    )
 
                 if draw_landmarks:
                     draw_tasks_landmarks(
@@ -664,9 +773,11 @@ def run_jarvis_loop(config: dict[str, Any], jarvis_config_path: str) -> None:
         else None
     )
 
-    font_scale, _ = _overlay_debug_cfg(config)
+    ui = overlay_ui_config(config)
+    font_scale = ui.font_scale
     win_title = "JARVIS — gesture + audio assistant"
     cv2.namedWindow(win_title, cv2.WINDOW_NORMAL)
+    _resize_debug_window(win_title, ui, fullscreen=False)
 
     print("[JARVIS] Starting…", flush=True)
     print(orchestrator.system_prompt(), flush=True)
@@ -723,24 +834,40 @@ def run_jarvis_loop(config: dict[str, Any], jarvis_config_path: str) -> None:
 
             pose_ok = bool(pose_result.pose_landmarks)
             n_hands = len(hands_result.multi_hand_landmarks or [])
-            hud_lines = [
-                "JARVIS — desk assistant",
-                f"Camera {camera_index} | FPS ~{fps_ema:.0f}",
-                f"Pose: {'YES' if pose_ok else 'no'}  |  Hands: {n_hands}",
-            ]
-            if all_outputs:
-                hud_lines.append(f"Last: {all_outputs[-1][:72]}")
+            fw = frame.shape[1]
+            if ui.compact_hud:
+                tail = (
+                    _truncate_hud_line(all_outputs[-1], max(36, fw // 9))
+                    if all_outputs
+                    else "Awaiting gesture/audio..."
+                )
+                hud_lines = [
+                    f"JARVIS | cam{camera_index} | FPS~{fps_ema:.0f}",
+                    f"pose:{'yes' if pose_ok else 'no'} | hands:{n_hands} | {tail}",
+                    "arms | pinch | pause | cancel | clap",
+                ]
+                footer = "Q/Esc quit | JARVIS"
             else:
-                hud_lines.append("Awaiting gesture or audio command…")
-            hud_lines.append(
-                "Gestures: arm_execute | confirm | pause | cancel | clap (audio)"
-            )
+                hud_lines = [
+                    "JARVIS — desk assistant",
+                    f"Camera {camera_index} | FPS ~{fps_ema:.0f}",
+                    f"Pose: {'YES' if pose_ok else 'no'}  |  Hands: {n_hands}",
+                ]
+                if all_outputs:
+                    hud_lines.append(f"Last: {all_outputs[-1][:72]}")
+                else:
+                    hud_lines.append("Awaiting gesture or audio command...")
+                hud_lines.append(
+                    "Gestures: arm_execute | confirm | pause | cancel | clap (audio)"
+                )
+                footer = "Q or Esc = quit | JARVIS active"
 
             draw_accessible_hud(
                 frame,
                 hud_lines,
-                footer="Q or Esc = quit | JARVIS active",
+                footer=footer,
                 font_scale=font_scale,
+                compact=ui.compact_hud,
             )
             cv2.imshow(win_title, frame)
             key = cv2.waitKey(1) & 0xFF
