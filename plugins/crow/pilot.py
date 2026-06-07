@@ -60,6 +60,23 @@ class BlackwingPilot:
         self._telemetry_started = False
         self._last_hud = "Auto patrol — press A to take manual control"
         self._last_telemetry: dict[str, Any] = {}
+        sim_cfg = cfg.get("simulation", {})
+        self._simulation_speed = float(sim_cfg.get("default_speed", 1.0))
+        self._sim_clock = self._initial_sim_clock(sim_cfg, roost_cfg)
+
+    def _initial_sim_clock(self, sim_cfg: dict[str, Any], roost_cfg: dict[str, Any]) -> float:
+        """Simulated seconds offset — optional start_hour jumps into a schedule phase."""
+        cycle_cfg = roost_cfg.get("daily_cycle", {})
+        compressed = float(cycle_cfg.get("compressed_cycle_minutes", 20) or 20)
+        day_seconds = compressed * 60.0
+        start_hour = sim_cfg.get("start_hour")
+        if start_hour is not None:
+            return (float(start_hour) / 24.0) * day_seconds
+        return 0.0
+
+    def set_simulation_speed(self, speed: float) -> float:
+        self._simulation_speed = max(0.25, min(8.0, float(speed)))
+        return self._simulation_speed
 
     def _on_remote_control(self, payload: dict[str, Any]) -> None:
         action = payload.get("action")
@@ -75,6 +92,12 @@ class BlackwingPilot:
                 role=payload.get("role"),
                 sex=str(payload.get("sex", "unknown")),
             )
+            return
+        if action == "set_simulation_speed":
+            self.set_simulation_speed(float(payload.get("speed", 1.0)))
+            return
+        if "simulation_speed" in payload:
+            self.set_simulation_speed(float(payload["simulation_speed"]))
             return
         if "auto_mode" in payload:
             self.set_auto_mode(bool(payload["auto_mode"]))
@@ -143,6 +166,7 @@ class BlackwingPilot:
             "preset": self._spawner.preset,
             "count": len(self._physics.flock.crows),
             "max_crows": self._spawner.max_crows(),
+            "simulation_speed": round(self._simulation_speed, 2),
         }
 
     def set_auto_mode(self, enabled: bool) -> bool:
@@ -232,6 +256,7 @@ class BlackwingPilot:
                 "metric_scale": float(self._hud_cfg.get("metric_scale", 1.0)),
             },
             "launch": self._launch_meta(),
+            "simulation_speed": round(self._simulation_speed, 2),
         }
 
     def _hud_display_cfg(self) -> dict[str, Any]:
@@ -260,20 +285,24 @@ class BlackwingPilot:
         pose_controls = self._flight.update(ts, pose_result)
         lead_snapshot = self._physics.flock.crows[0]
 
+        sim_dt = dt * self._simulation_speed
+        self._sim_clock += sim_dt
+
         if self._auto_mode:
-            controls = self._auto.generate(lead_snapshot, self._colony)
+            controls = self._auto.generate(lead_snapshot, self._colony, sim_dt)
             player_control = False
         else:
             controls = pose_controls
             player_control = True
 
-        lead = self._physics.step(controls, dt, self._colony)
+        lead = self._physics.step(controls, sim_dt, self._colony)
         self._colony.update(
             self._physics.flock.crows,
             player_control=player_control,
             player_tracking=pose_controls.tracking,
             player_perch=pose_controls.perch if player_control else False,
-            wall_ts=ts,
+            wall_ts=self._sim_clock,
+            sim_dt=sim_dt,
         )
         telemetry = self._physics.to_telemetry(lead, controls, self._colony)
         telemetry["colony"] = self._colony.to_telemetry(self._physics.flock.crows)

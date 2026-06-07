@@ -7,6 +7,28 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from .colony_cycle import (
+    SCHEDULE_NEAR_ROOST,
+    SCHEDULE_OUTBOUND,
+    SCHEDULE_PATROL,
+    SCHEDULE_RETURN,
+    SCHEDULE_ROOST_PERCH,
+    acoustic_pressure,
+    PHASE_NOTES,
+    colony_event_hints,
+    combine_trait_modifiers,
+    compute_coherence,
+    compute_pressure,
+    estimate_call_density,
+    flock_dispersion,
+    infer_observed_behavior,
+    legacy_phase,
+    next_phase,
+    phase_deviation,
+    roost_proximity,
+    schedule_phase,
+    trait_scalar,
+)
 from .physics import CrowState
 
 
@@ -26,6 +48,9 @@ DAILY_PHASES = (
     "evening_return",
 )
 
+# Backward-compatible alias for legacy 4-phase helpers.
+LEGACY_DAILY_PHASES = DAILY_PHASES
+
 
 @dataclass
 class Roost:
@@ -43,6 +68,8 @@ class Roost:
     pilot_trust: float = 0.85
     lat: float | None = None
     lon: float | None = None
+    traits: tuple[str, ...] = ()
+    active: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -56,6 +83,8 @@ class Roost:
             "territory_radius": round(self.territory_radius, 2),
             "pilot_name": self.pilot_name,
             "pilot_trust": round(self.pilot_trust, 3),
+            "traits": list(self.traits),
+            "active": self.active,
         }
         if self.lat is not None and self.lon is not None:
             out["geo"] = {"lat": self.lat, "lon": self.lon}
@@ -96,44 +125,84 @@ def resolve_cycle_hour(ts: float, cfg: dict[str, Any]) -> float:
 
 
 class Colony:
-    """Simple routines: morning departures, evening regroup, player as one agent."""
+    """Roost-level colony model — schedule, traits, coherence, pressure."""
 
     def __init__(self, cfg: dict[str, Any]) -> None:
-        loc = cfg.get("location", [0, 8, 0])
-        geo = cfg.get("geo", {})
-        self.roost = Roost(
-            id=str(cfg.get("id", "north_yard")),
-            name=str(cfg.get("name", "North Yard Roost")),
-            x=float(loc[0]),
-            y=float(loc[1]),
-            z=float(loc[2]),
-            population=int(cfg.get("population", 20)),
-            food_score=float(cfg.get("food_score", 0.72)),
-            safety_score=float(cfg.get("safety_score", 0.85)),
-            noise_level=float(cfg.get("noise_level", 0.15)),
-            territory_radius=float(cfg.get("territory_radius", 45)),
-            pilot_name=str(cfg.get("pilot_name", "Pilot")),
-            pilot_trust=float(cfg.get("pilot_trust", 0.85)),
-            lat=geo.get("lat"),
-            lon=geo.get("lon"),
-        )
+        self._cycle_cfg = cfg.get("daily_cycle", {})
+        self._roosts = self._load_roosts(cfg)
+        self.roost = self._pick_home_roost(cfg)
+        self._trait_mods = combine_trait_modifiers(list(self.roost.traits))
         self._agents: dict[str, CrowAgent] = {}
         self._greeted = False
         self._phase_note = "The roost is quiet."
-        self._cycle_phase = "midday_forage"
-        self._cycle_cfg = cfg.get("daily_cycle", {})
+        self._schedule_phase = "patrol"
+        self._legacy_phase = "midday_forage"
+        self._cycle_hour = 12.0
+        self._observed_behavior = "patrolling"
+        self._phase_deviation = 0.0
+        self._coherence = 0.5
+        self._pressure = 0.0
+        self._call_density = 0.0
+        self._acoustic_pressure = 0.0
+        self._colony_events: list[dict[str, str]] = []
         self._waypoint_index = 0
+        self._waypoint_dwell = 0.0
         self._patrol_points = self._build_patrol_points()
+
+    def _roost_from_entry(self, entry: dict[str, Any]) -> Roost:
+        loc = entry.get("location", [0, 8, 0])
+        geo = entry.get("geo", {})
+        traits = tuple(t for t in entry.get("traits", []) if isinstance(t, str))
+        return Roost(
+            id=str(entry.get("id", "north_yard")),
+            name=str(entry.get("name", "Roost")),
+            x=float(loc[0]),
+            y=float(loc[1]),
+            z=float(loc[2]),
+            population=int(entry.get("population", 20)),
+            food_score=float(entry.get("food_score", 0.72)),
+            safety_score=float(entry.get("safety_score", 0.85)),
+            noise_level=float(entry.get("noise_level", 0.15)),
+            territory_radius=float(entry.get("territory_radius", 45)),
+            pilot_name=str(entry.get("pilot_name", "Pilot")),
+            pilot_trust=float(entry.get("pilot_trust", 0.85)),
+            lat=geo.get("lat"),
+            lon=geo.get("lon"),
+            traits=traits,
+            active=bool(entry.get("active", True)),
+        )
+
+    def _load_roosts(self, cfg: dict[str, Any]) -> list[Roost]:
+        entries = cfg.get("roosts")
+        if isinstance(entries, list) and entries:
+            return [self._roost_from_entry(e) for e in entries if isinstance(e, dict)]
+        return [self._roost_from_entry(cfg)]
+
+    def _pick_home_roost(self, cfg: dict[str, Any]) -> Roost:
+        home_id = str(cfg.get("home_roost_id", cfg.get("id", "north_yard")))
+        for roost in self._roosts:
+            if roost.id == home_id and roost.active:
+                return roost
+        for roost in self._roosts:
+            if roost.active:
+                return roost
+        return self._roosts[0]
 
     @property
     def cycle_phase(self) -> str:
-        return self._cycle_phase
+        """Legacy 4-phase label — used by flight routines (unchanged physics path)."""
+        return self._legacy_phase
+
+    @property
+    def schedule_phase(self) -> str:
+        return self._schedule_phase
 
     def _build_patrol_points(self) -> list[tuple[float, float, float]]:
         bearings = self._cycle_cfg.get(
             "patrol_bearings", [0, 60, 120, 180, 240, 300]
         )
         radius_frac = float(self._cycle_cfg.get("patrol_radius_fraction", 0.52))
+        radius_frac *= 1.0 + trait_scalar(self._trait_mods, "patrol_radius")
         altitude = float(self._cycle_cfg.get("patrol_altitude", 14.0))
         dist = self.roost.territory_radius * radius_frac
         points: list[tuple[float, float, float]] = []
@@ -153,33 +222,119 @@ class Colony:
             return (self.roost.x, self.roost.y + 5.0, self.roost.z + 8.0)
         return self._patrol_points[index % len(self._patrol_points)]
 
-    def routine_target(self, crow: CrowState) -> tuple[float, float, float]:
-        """Stable waypoint for autopilot — roost at night, patrol loop by day."""
-        arrival = float(self._cycle_cfg.get("waypoint_arrival", 7.0))
+    def reset_patrol_state(self) -> None:
+        self._waypoint_index = 0
+        self._waypoint_dwell = 0.0
+
+    def roost_perch_target(self) -> tuple[float, float, float]:
+        return self._roost_perch_target()
+
+    def roost_approach_target(self) -> tuple[float, float, float]:
+        return self._roost_approach_target()
+
+    def wants_roost_perch(self) -> bool:
+        return self._schedule_phase in SCHEDULE_ROOST_PERCH
+
+    def homing_to_roost(self, crow: CrowState) -> bool:
+        if self._schedule_phase in SCHEDULE_ROOST_PERCH:
+            return True
+        if self._schedule_phase in SCHEDULE_RETURN:
+            radius = float(self._cycle_cfg.get("return_perch_homing_radius", 24.0))
+            return self.distance_to_roost(crow) < radius
+        return False
+
+    def perch_target_for(
+        self, crow_id: str, fallback_index: int = 0
+    ) -> tuple[float, float, float]:
+        base = self._roost_perch_target()
+        agent = self._agents.get(crow_id)
+        idx = (agent.spawn_order - 1) if agent else fallback_index
+        offsets = (
+            (0.0, 0.0, 0.0),
+            (-1.5, 0.12, 1.0),
+            (1.5, 0.12, -1.0),
+            (-0.9, 0.28, -1.2),
+            (1.1, 0.22, 1.3),
+            (-2.0, 0.08, -0.4),
+            (2.0, 0.08, 0.4),
+        )
+        off = offsets[idx % len(offsets)]
+        return (base[0] + off[0], base[1] + off[1], base[2] + off[2])
+
+    def _roost_perch_target(self) -> tuple[float, float, float]:
         roost_y = self.roost.y + float(self._cycle_cfg.get("roost_perch_height", 2.0))
+        return (self.roost.x, roost_y, self.roost.z)
+
+    def _roost_approach_target(self) -> tuple[float, float, float]:
         approach_y = self.roost.y + float(self._cycle_cfg.get("roost_approach_height", 5.0))
+        return (self.roost.x, approach_y, self.roost.z + 5.0)
 
-        if self._cycle_phase == "night_roost":
-            return (self.roost.x, roost_y, self.roost.z)
-
-        if self._cycle_phase == "evening_return":
-            return (self.roost.x, approach_y, self.roost.z + 5.0)
-
+    def _patrol_transit_target(
+        self, crow: CrowState, sim_dt: float
+    ) -> tuple[float, float, float]:
+        """Two-anchor patrol legs with dwell — avoids tight hex orbits."""
+        inner = float(self._cycle_cfg.get("waypoint_arrival_inner", 8.0))
+        dwell_req = float(self._cycle_cfg.get("waypoint_dwell_seconds", 4.0))
+        n = max(len(self._patrol_points), 1)
         target = self._patrol_point(self._waypoint_index)
         dist = math.hypot(crow.x - target[0], crow.z - target[2])
-        # Advance only when genuinely arrived — prevents orbit/spin at waypoint gate.
-        if dist < float(self._cycle_cfg.get("waypoint_arrival_inner", 5.0)):
-            self._waypoint_index = (self._waypoint_index + 1) % max(
-                len(self._patrol_points), 1
-            )
+
+        if dist < inner:
+            self._waypoint_dwell += sim_dt
+        else:
+            self._waypoint_dwell = max(0.0, self._waypoint_dwell - sim_dt * 0.25)
+
+        if self._waypoint_dwell >= dwell_req:
+            half = max(n // 2, 1)
+            self._waypoint_index = (
+                half if self._waypoint_index == 0 else 0
+            ) % n
+            self._waypoint_dwell = 0.0
             target = self._patrol_point(self._waypoint_index)
         return target
+
+    def routine_target(self, crow: CrowState, sim_dt: float = 0.033) -> tuple[float, float, float]:
+        """Schedule-aware waypoint — perch, return, outbound, or patrol transit."""
+        if self._schedule_phase in SCHEDULE_ROOST_PERCH:
+            return self._roost_perch_target()
+
+        if self._schedule_phase in SCHEDULE_RETURN:
+            return self._roost_approach_target()
+
+        if self._schedule_phase in SCHEDULE_NEAR_ROOST:
+            call_y = self.roost.y + float(self._cycle_cfg.get("morning_call_height", 6.0))
+            return (self.roost.x, call_y, self.roost.z + 10.0)
+
+        if self._schedule_phase in SCHEDULE_OUTBOUND:
+            return self._patrol_point(0)
+
+        if self._schedule_phase in SCHEDULE_PATROL:
+            return self._patrol_transit_target(crow, sim_dt)
+
+        return self._roost_perch_target()
+
+    def _auto_agent_state(self, dist_home: float) -> str:
+        phase = self._schedule_phase
+        if phase in SCHEDULE_ROOST_PERCH:
+            return "PERCHING"
+        if phase in SCHEDULE_RETURN:
+            return "RETURNING"
+        if phase in SCHEDULE_NEAR_ROOST:
+            return "PERCHING"
+        if phase in SCHEDULE_OUTBOUND:
+            return "FORAGING" if dist_home > 10 else "PERCHING"
+        if phase == "foraging":
+            return "FORAGING"
+        if phase == "patrol":
+            return "PATROLLING"
+        return "PATROLLING"
 
     def get_agent(self, crow_id: str) -> CrowAgent | None:
         return self._agents.get(crow_id)
 
     def clear_agents(self) -> None:
         self._agents.clear()
+        self.reset_patrol_state()
 
     def register_spawn(
         self,
@@ -226,18 +381,18 @@ class Colony:
         player_tracking: bool,
         player_perch: bool,
         wall_ts: float | None = None,
+        sim_dt: float = 0.033,
     ) -> None:
         ts = wall_ts if wall_ts is not None else time.time()
+        self._last_sim_dt = sim_dt
         hour = resolve_cycle_hour(ts, self._cycle_cfg)
-        self._cycle_phase = daily_phase(hour)
+        self._cycle_hour = hour
+        self._schedule_phase = schedule_phase(hour)
+        self._legacy_phase = legacy_phase(self._schedule_phase)
 
-        notes = {
-            "morning_departure": "Morning departures — the murder scatters to scout.",
-            "midday_forage": "Midday patrol — territory watch and foraging.",
-            "evening_return": "Evening regroup — crows drift back toward the roost.",
-            "night_roost": "Night roost — low movement, occupancy at the home tree.",
-        }
-        self._phase_note = notes[self._cycle_phase]
+        self._phase_note = PHASE_NOTES.get(
+            self._schedule_phase, "Colony routine in progress."
+        )
 
         if player_tracking and not self._greeted:
             self._greeted = True
@@ -248,37 +403,26 @@ class Colony:
 
             if i == 0:
                 if not player_control:
-                    if self._cycle_phase == "night_roost":
-                        agent.state = "PERCHING"
-                    elif self._cycle_phase == "evening_return":
-                        agent.state = "RETURNING"
-                    elif self._cycle_phase == "morning_departure":
-                        agent.state = "FORAGING"
-                    else:
-                        agent.state = "PATROLLING"
+                    agent.state = self._auto_agent_state(dist_home)
                 elif player_perch:
                     agent.state = "PERCHING"
                 elif player_tracking:
                     agent.state = "FOLLOWING_PLAYER"
-                elif self._cycle_phase == "evening_return" or dist_home > self.roost.territory_radius * 0.85:
+                elif self._legacy_phase == "evening_return" or dist_home > self.roost.territory_radius * 0.85:
                     agent.state = "RETURNING"
-                elif self._cycle_phase == "night_roost":
+                elif self._legacy_phase == "night_roost":
                     agent.state = "PERCHING"
                 else:
                     agent.state = "FORAGING"
             elif player_control and player_tracking and not player_perch:
                 agent.state = "FOLLOWING_PLAYER"
             elif not player_control:
-                agent.state = (
-                    "PERCHING"
-                    if self._cycle_phase == "night_roost"
-                    else "PATROLLING"
-                )
-            elif self._cycle_phase == "evening_return" and dist_home > 12:
+                agent.state = self._auto_agent_state(dist_home)
+            elif self._legacy_phase == "evening_return" and dist_home > 12:
                 agent.state = "RETURNING"
-            elif self._cycle_phase == "morning_departure":
+            elif self._legacy_phase == "morning_departure":
                 agent.state = "FORAGING" if dist_home > 8 else "PERCHING"
-            elif self._cycle_phase == "night_roost":
+            elif self._legacy_phase == "night_roost":
                 agent.state = "PERCHING"
             elif dist_home > 10:
                 agent.state = "PATROLLING"
@@ -290,6 +434,8 @@ class Colony:
                 agent.energy = min(1.0, agent.energy + 0.004)
             agent.curiosity = min(1.0, agent.curiosity + 0.0005)
 
+        self._update_colony_metrics(crows, player_control=player_control)
+
     def distance_to_roost(self, crow: CrowState) -> float:
         return math.hypot(crow.x - self.roost.x, crow.z - self.roost.z)
 
@@ -298,13 +444,94 @@ class Colony:
         dz = self.roost.z - crow.z
         dist = math.hypot(dx, dz)
         radius = self.roost.territory_radius
-        if dist <= radius or dist < 1e-6:
+        if dist < 1e-6:
+            return 0.0, 0.0
+
+        if self._schedule_phase in SCHEDULE_ROOST_PERCH:
+            if dist > 1.5:
+                strength = min(3.2, dist * 0.22) * dt
+                return (dx / dist) * strength, (dz / dist) * strength
+            return 0.0, 0.0
+
+        if dist <= radius:
             return 0.0, 0.0
         overshoot = min(1.0, (dist - radius) / max(radius, 1e-6))
         strength = float(4.5 * overshoot * dt)
-        if self._cycle_phase == "evening_return":
-            strength *= 1.35
+        if self._schedule_phase in SCHEDULE_RETURN:
+            strength *= 1.35 + trait_scalar(self._trait_mods, "return_bias")
         return (dx / dist) * strength, (dz / dist) * strength
+
+    def _flock_telemetry_slice(self, crows: list[CrowState]) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": c.id,
+                "position": [c.x, c.y, c.z],
+                "rotation": [c.pitch, c.yaw, c.roll],
+            }
+            for c in crows
+        ]
+
+    def _update_colony_metrics(
+        self, crows: list[CrowState], *, player_control: bool
+    ) -> None:
+        agents_payload = [
+            {
+                "id": agent.crow_id,
+                "state": agent.state,
+                "distance_home": self.distance_to_roost(c),
+            }
+            for c in crows
+            if (agent := self._agents.get(c.id)) is not None
+        ]
+        agent_states = [str(a["state"]) for a in agents_payload]
+        flock_slice = self._flock_telemetry_slice(crows)
+        territory = self.roost.territory_radius
+        dispersion = flock_dispersion(flock_slice, territory)
+        proximity = roost_proximity(agents_payload, territory)
+
+        self._observed_behavior = infer_observed_behavior(
+            agent_states,
+            roost_proximity=proximity,
+            dispersion=dispersion,
+        )
+        self._phase_deviation = phase_deviation(
+            self._schedule_phase, self._observed_behavior
+        )
+        disturbance = self._observed_behavior == "disturbance_response" or (
+            player_control and any(s == "FOLLOWING_PLAYER" for s in agent_states)
+        )
+        self._coherence = compute_coherence(
+            agent_states=agent_states,
+            flock=flock_slice,
+            roost_proximity=proximity,
+            dispersion=dispersion,
+            trait_mods=self._trait_mods,
+            schedule_phase_name=self._schedule_phase,
+        )
+        self._pressure = compute_pressure(
+            flock_count=len(crows),
+            population=self.roost.population,
+            noise_level=self.roost.noise_level,
+            food_score=self.roost.food_score,
+            phase_deviation_score=self._phase_deviation,
+            dispersion=dispersion,
+            trait_mods=self._trait_mods,
+            disturbance_active=disturbance,
+        )
+        self._call_density = estimate_call_density(
+            self._schedule_phase, self._trait_mods
+        )
+        self._acoustic_pressure = acoustic_pressure(
+            self._call_density, self.roost.noise_level
+        )
+        self._colony_events = colony_event_hints(
+            schedule_phase=self._schedule_phase,
+            coherence=self._coherence,
+            pressure=self._pressure,
+            phase_deviation_score=self._phase_deviation,
+            observed_behavior=self._observed_behavior,
+            disturbance_active=disturbance,
+        )
 
     def spawn_offset(self, index: int, total: int) -> tuple[float, float, float]:
         spread = 2.2
@@ -322,8 +549,21 @@ class Colony:
 
         return {
             "roost": self.roost.to_dict(),
-            "daily_cycle": self._cycle_phase,
+            "roosts": [r.to_dict() for r in self._roosts],
+            "home_roost_id": self.roost.id,
+            "daily_cycle": self._schedule_phase,
+            "cycle_hour": round(self._cycle_hour, 2),
+            "next_phase": next_phase(self._schedule_phase),
+            "expected_phase": self._schedule_phase,
+            "observed_behavior": self._observed_behavior,
+            "phase_deviation": round(self._phase_deviation, 3),
+            "coherence": round(self._coherence, 3),
+            "pressure": round(self._pressure, 3),
+            "call_density": round(self._call_density, 2),
+            "acoustic_pressure": round(self._acoustic_pressure, 3),
+            "legacy_daily_cycle": self._legacy_phase,
             "phase_note": self._phase_note,
+            "events": self._colony_events,
             "greeting": greeting,
             "agents": [
                 {

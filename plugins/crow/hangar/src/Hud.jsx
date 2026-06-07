@@ -129,10 +129,12 @@ export default function Hud({
         {colony?.greeting ? <div className="stat roost-greeting">{colony.greeting}</div> : null}
         {colony?.roost?.name ? (
           <div className="stat">
-            {colony.roost.name} · {colony.daily_cycle || "—"} · pop {colony.roost.population}
+            {colony.roost.name} · {colony.daily_cycle || "—"}
+            {colony.next_phase ? ` → ${colony.next_phase}` : ""} · pop {colony.roost.population}
+            {typeof colony.coherence === "number" ? ` · coh ${colony.coherence.toFixed(2)}` : ""}
           </div>
         ) : null}
-        <div className="stat camera-hint">1-4 cameras · M map · OpenCV: A toggles mode</div>
+        <div className="stat camera-hint">1-4 cameras · M map · R roost day (resize ↖) · OpenCV: A toggles mode</div>
       </div>
       {showDebugPanel && state?.debug ? (
         <div id="debug-panel" style={{ display: "block" }}>

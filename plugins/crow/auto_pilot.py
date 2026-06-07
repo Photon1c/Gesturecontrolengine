@@ -7,6 +7,7 @@ from typing import Any
 
 from .flight_controller import FlightControls
 from .physics import CrowState
+from .colony_cycle import SCHEDULE_RETURN, SCHEDULE_ROOST_PERCH
 from .roost import Colony
 
 
@@ -18,23 +19,41 @@ class RoutineAutoPilot:
         self._turn_smooth = 0.0
         self._pitch_smooth = 0.0
 
-    def generate(self, lead: CrowState, colony: Colony) -> FlightControls:
-        phase = colony.cycle_phase
-        target = colony.routine_target(lead)
+    def generate(
+        self, lead: CrowState, colony: Colony, sim_dt: float = 0.033
+    ) -> FlightControls:
+        schedule = colony.schedule_phase
+        legacy = colony.cycle_phase
+        target = colony.routine_target(lead, sim_dt)
 
-        if phase == "night_roost":
-            self._turn_smooth *= 0.85
-            self._pitch_smooth *= 0.85
-            return FlightControls(
-                flap_power=0.0,
-                wingspan=0.12,
-                bank_steering=0.0,
-                pitch=0.0,
-                glide=False,
-                perch=True,
-                tracking=True,
-                autonomous=True,
-            )
+        arrive_dist = float(self.cfg.get("perch_arrival_distance", 1.6))
+        arrive_alt = float(self.cfg.get("perch_arrival_altitude", 1.1))
+
+        if schedule in SCHEDULE_ROOST_PERCH or legacy == "night_roost":
+            perch_target = colony.roost_perch_target()
+            dist_home = math.hypot(lead.x - perch_target[0], lead.z - perch_target[2])
+            alt_err = abs(lead.y - perch_target[1])
+            if dist_home > arrive_dist * 2.5 or alt_err > arrive_alt * 2.0:
+                target = perch_target
+            else:
+                self._turn_smooth *= 0.85
+                self._pitch_smooth *= 0.85
+                return FlightControls(
+                    flap_power=0.0,
+                    wingspan=0.12,
+                    bank_steering=0.0,
+                    pitch=0.0,
+                    glide=False,
+                    perch=True,
+                    tracking=True,
+                    autonomous=True,
+                )
+        elif schedule in SCHEDULE_RETURN:
+            perch_target = colony.roost_perch_target()
+            dist_perch = math.hypot(lead.x - perch_target[0], lead.z - perch_target[2])
+            cutover = float(self.cfg.get("return_perch_cutover", 13.0))
+            if dist_perch < cutover:
+                target = perch_target
 
         dx = target[0] - lead.x
         dz = target[2] - lead.z
@@ -52,10 +71,15 @@ class RoutineAutoPilot:
             yaw_err = 0.0
 
         # Scale turn demand down near waypoint to prevent overshoot spins.
-        if dist_h < float(self.cfg.get("approach_slow_distance", 14.0)):
-            yaw_err *= max(0.25, dist_h / float(self.cfg.get("approach_slow_distance", 14.0)))
+        slow_dist = float(self.cfg.get("approach_slow_distance", 14.0))
+        if dist_h < slow_dist:
+            yaw_err *= max(0.2, dist_h / slow_dist)
+        if dist_h < 5.0:
+            yaw_err = 0.0
 
         turn_gain = float(self.cfg.get("turn_gain", 0.85))
+        if dist_h > 18.0:
+            turn_gain *= 0.72
         turn_raw = max(-1.0, min(1.0, yaw_err * turn_gain))
         turn_alpha = float(self.cfg.get("turn_smoothing", 0.28))
         self._turn_smooth = turn_alpha * turn_raw + (1.0 - turn_alpha) * self._turn_smooth
@@ -70,7 +94,7 @@ class RoutineAutoPilot:
             flap = float(self.cfg.get("climb_flap_power", 0.42))
         elif dy > float(self.cfg.get("hold_flap_threshold", 0.55)):
             flap = float(self.cfg.get("hold_flap_power", 0.18))
-        elif phase == "morning_departure" and dist_h > float(
+        elif legacy == "morning_departure" and dist_h > float(
             self.cfg.get("departure_flap_distance", 14.0)
         ):
             flap = float(self.cfg.get("departure_flap_power", 0.22))

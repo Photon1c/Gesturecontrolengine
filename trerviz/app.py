@@ -106,6 +106,19 @@ def main() -> None:
                     st.success("Flock reset")
                 else:
                     st.error(detail)
+            st.caption("Simulation speed")
+            speed_cols = st.columns(4)
+            for col, spd in zip(speed_cols, [0.5, 1, 2, 4]):
+                with col:
+                    if st.button(f"{spd}×", key=f"crow_speed_{spd}"):
+                        ok, detail = post_crow_control(
+                            {"action": "set_simulation_speed", "speed": spd},
+                            cfg,
+                        )
+                        if ok:
+                            st.success(f"Speed {spd}×")
+                        else:
+                            st.error(detail)
             if st.button("+ Spawn crow", key="crow_spawn"):
                 ok, detail = post_crow_control(
                     {"action": "spawn_crow", "sex": "unknown"},

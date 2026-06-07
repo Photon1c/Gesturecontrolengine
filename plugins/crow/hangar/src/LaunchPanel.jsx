@@ -13,7 +13,16 @@ const PRESETS = [
   { id: "juvenile_heavy", label: "Juvenile heavy" },
 ];
 
-export default function LaunchPanel({ launch, count, maxCrows, onReset, onSpawn }) {
+export default function LaunchPanel({
+  launch,
+  count,
+  maxCrows,
+  simulationSpeed,
+  speedOptions,
+  onSetSpeed,
+  onReset,
+  onSpawn,
+}) {
   const [open, setOpen] = useState(false);
   const [startCount, setStartCount] = useState(count || 3);
   const [formation, setFormation] = useState(launch?.formation || "patrol_wedge");
@@ -71,6 +80,22 @@ export default function LaunchPanel({ launch, count, maxCrows, onReset, onSpawn 
               ))}
             </select>
           </label>
+          <div className="launch-row launch-speed-label">Simulation speed</div>
+          <div className="launch-speed-row">
+            {(speedOptions || [0.5, 1, 2, 4]).map((s) => (
+              <button
+                key={s}
+                type="button"
+                className={
+                  Math.abs((simulationSpeed || 1) - s) < 0.05 ? "speed-btn active" : "speed-btn"
+                }
+                disabled={busy}
+                onClick={() => run(() => onSetSpeed(s))}
+              >
+                {s}×
+              </button>
+            ))}
+          </div>
           <div className="launch-actions">
             <button
               type="button"
@@ -88,7 +113,7 @@ export default function LaunchPanel({ launch, count, maxCrows, onReset, onSpawn 
             </button>
           </div>
           <div className="launch-stat">
-            Flock {count}/{maxCrows} · {formation} · {preset}
+            Flock {count}/{maxCrows} · {formation} · {preset} · {simulationSpeed || 1}×
           </div>
           {error ? <div className="launch-error">{error}</div> : null}
         </div>

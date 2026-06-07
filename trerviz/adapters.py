@@ -69,7 +69,7 @@ def _crow_agent_conflict(states: list[str], daily_cycle: str) -> float:
     if len(unique) <= 1:
         return 0.0
     score = clamp01((len(unique) - 1) / 3.0)
-    if daily_cycle in ("evening_return", "night_roost"):
+    if daily_cycle in _CONVERGENCE_PHASES or daily_cycle in _NIGHT_PHASES:
         if "RETURNING" in unique and ("PATROLLING" in unique or "FORAGING" in unique):
             score = max(score, 0.65)
         if "PERCHING" in unique and ("RETURNING" in unique or "FORAGING" in unique):
@@ -83,7 +83,7 @@ def _crow_regroup_distance_pressure(
     daily_cycle: str,
 ) -> float:
     """Share of agents still far from roost during evening/night regroup."""
-    if daily_cycle not in ("evening_return", "night_roost") or not agents:
+    if daily_cycle not in (_CONVERGENCE_PHASES | _NIGHT_PHASES) or not agents:
         return 0.0
     threshold = territory_radius * 0.45
     far = sum(1 for a in agents if float(a.get("distance_home", 0.0)) > threshold)
@@ -274,11 +274,38 @@ def _crow_build_fields(
 
 
 _CYCLE_EXPECTED_STATES: dict[str, set[str]] = {
+    # Legacy 4-phase schedule.
     "morning_departure": {"FORAGING", "RETURNING", "PATROLLING"},
     "midday_forage": {"PATROLLING", "FORAGING"},
     "evening_return": {"RETURNING", "PERCHING"},
     "night_roost": {"PERCHING"},
+    # Roost schedule (colony_cycle.SCHEDULE_PHASES).
+    "sleep": {"PERCHING"},
+    "awakening": {"PERCHING"},
+    "morning_calls": {"PERCHING", "FORAGING", "PATROLLING"},
+    "dispersal": {"FORAGING", "PATROLLING"},
+    "foraging": {"FORAGING", "PATROLLING"},
+    "patrol": {"PATROLLING", "FORAGING"},
+    "gathering_calls": {"RETURNING", "PATROLLING"},
+    "roost_convergence": {"RETURNING", "PERCHING"},
+    "social_chatter": {"PERCHING"},
+    "settling": {"PERCHING"},
 }
+
+_CONVERGENCE_PHASES = frozenset(
+    {"evening_return", "roost_convergence", "gathering_calls", "settling"}
+)
+_NIGHT_PHASES = frozenset({"night_roost", "sleep", "awakening", "settling", "social_chatter"})
+_DEPARTURE_PHASES = frozenset({"morning_departure", "morning_calls", "dispersal"})
+
+
+def _extract_colony_float(colony: dict[str, Any], key: str) -> float | None:
+    if key not in colony:
+        return None
+    try:
+        return float(colony[key])
+    except (TypeError, ValueError):
+        return None
 
 
 def _extract_call_density(raw: dict[str, Any]) -> float:
@@ -293,6 +320,41 @@ def _extract_call_density(raw: dict[str, Any]) -> float:
         if value is not None:
             return max(0.0, float(value))
     return 0.0
+
+
+def _extract_acoustic_pressure(raw: dict[str, Any]) -> float:
+    colony = raw.get("colony") or {}
+    candidates = [
+        (raw.get("audio") or {}).get("acoustic_pressure"),
+        colony.get("acoustic_pressure"),
+        ((colony.get("roost") or {}).get("acoustic_pressure")),
+    ]
+    for value in candidates:
+        if value is not None:
+            return clamp01(float(value))
+    return 0.0
+
+
+def _merge_colony_events(
+    events: list[VizEvent], colony: dict[str, Any]
+) -> list[VizEvent]:
+    """Append engine-emitted colony events (deduped by message)."""
+    seen = {e.message for e in events}
+    for item in colony.get("events") or []:
+        if not isinstance(item, dict):
+            continue
+        msg = str(item.get("message", ""))
+        if not msg or msg in seen:
+            continue
+        seen.add(msg)
+        events.append(
+            VizEvent(
+                str(item.get("type", "reorganization")),
+                msg,
+                str(item.get("severity", "low")),
+            )
+        )
+    return events
 
 
 def _crow_state_uniformity(states: list[str]) -> float:
@@ -373,9 +435,9 @@ def _crow_coherence(
 
     # Phase bonuses: regrouping at roost or tight midday patrol.
     phase_bonus = 0.0
-    if daily_cycle == "evening_return":
+    if daily_cycle in _CONVERGENCE_PHASES:
         phase_bonus = roost_proximity * 0.12
-    elif daily_cycle == "midday_forage":
+    elif daily_cycle in ("midday_forage", "patrol", "foraging"):
         phase_bonus = proximity * 0.08
     if healthy_convergence:
         phase_bonus = max(phase_bonus, 0.10)
@@ -437,7 +499,7 @@ def _crow_is_healthy_convergence(
     rupture_risk very low, dissipation high, main event=Roost convergence underway.
     """
     return (
-        daily_cycle == "evening_return"
+        daily_cycle in _CONVERGENCE_PHASES
         and roost_proximity >= 0.5
         and stall < 0.35
         and regroup_far < 0.3
@@ -479,7 +541,7 @@ def _crow_trer_phase(
     if stall >= 0.68:
         return "overextension"
     if healthy_convergence or (
-        daily_cycle == "evening_return"
+        daily_cycle in _CONVERGENCE_PHASES
         and roost_proximity >= 0.62
         and stall < 0.32
         and criticality < 0.4
@@ -490,11 +552,11 @@ def _crow_trer_phase(
         return "peak"
     if noise >= 0.48 or dispersion >= 0.42 or criticality >= 0.45:
         return "surge"
-    if daily_cycle == "night_roost" or (pressure < 0.28 and criticality < 0.3):
+    if daily_cycle in _NIGHT_PHASES or (pressure < 0.28 and criticality < 0.3):
         return "refractory"
-    if daily_cycle == "morning_departure" or (pressure < 0.38 and dispersion < 0.35):
+    if daily_cycle in _DEPARTURE_PHASES or (pressure < 0.38 and dispersion < 0.35):
         return "build_up"
-    if daily_cycle == "evening_return":
+    if daily_cycle in _CONVERGENCE_PHASES:
         return "discharge"
     return "surge" if pressure >= 0.45 else "build_up"
 
@@ -531,6 +593,10 @@ class CrowAdapter(BaseAdapter):
 
         roost = colony.get("roost") or {}
         cycle = str(colony.get("daily_cycle", ""))
+        legacy_cycle = str(colony.get("legacy_daily_cycle", cycle))
+        colony_coherence = _extract_colony_float(colony, "coherence")
+        colony_pressure = _extract_colony_float(colony, "pressure")
+        phase_deviation = _extract_colony_float(colony, "phase_deviation")
         territory = float(roost.get("territory_radius", 45.0))
         noise = float(roost.get("noise_level", 0.15))
         safety = float(roost.get("safety_score", 0.85))
@@ -541,22 +607,28 @@ class CrowAdapter(BaseAdapter):
         lead_home = float((agent_map.get("lead") or {}).get("distance_home", 0.0))
         evening_dist_p = (
             clamp01(lead_home / max(territory * 0.55, 1e-6))
-            if cycle == "evening_return"
+            if cycle in _CONVERGENCE_PHASES or legacy_cycle == "evening_return"
             else 0.0
         )
 
-        # Pressure: environmental + energetic stress, not raw activity.
-        pressure = clamp01(
+        # Flight-layer pressure; blend with colony.pressure when engine provides it.
+        flight_pressure = clamp01(
             stall * 0.30
             + noise * 0.20
             + low_energy_p * 0.15
             + evening_dist_p * 0.20
             + dispersion * 0.15
         )
+        if colony_pressure is not None:
+            dev_boost = (phase_deviation or 0.0) * 0.12
+            pressure = clamp01(colony_pressure * 0.62 + flight_pressure * 0.38 + dev_boost)
+        else:
+            pressure = flight_pressure
 
         agent_states = [str(a.get("state", "")) for a in agents]
-        conflict = _crow_agent_conflict(agent_states, cycle)
-        regroup_far = _crow_regroup_distance_pressure(agents, territory, cycle)
+        conflict = _crow_agent_conflict(agent_states, legacy_cycle if legacy_cycle else cycle)
+        regroup_cycle = cycle if cycle in _CONVERGENCE_PHASES else legacy_cycle
+        regroup_far = _crow_regroup_distance_pressure(agents, territory, regroup_cycle)
         unsafe = clamp01(1.0 - safety)
 
         # Criticality: instability — stall, noise, weak safety, scatter, routine conflict.
@@ -609,21 +681,25 @@ class CrowAdapter(BaseAdapter):
         launch_meta = raw.get("meta", {}).get("launch") or {}
         formation = str(launch_meta.get("formation", ""))
 
-        coherence = _crow_coherence(
-            dispersion=dispersion,
-            agent_states=agent_states,
-            agents=agents,
-            flock=flock,
-            daily_cycle=cycle,
-            stall=stall,
-            noise=noise,
-            conflict=conflict,
-            regroup_far=regroup_far,
-            roost_proximity=roost_proximity,
-            healthy_convergence=healthy_convergence,
-            formation=formation,
-        )
+        if colony_coherence is not None:
+            coherence = clamp01(colony_coherence)
+        else:
+            coherence = _crow_coherence(
+                dispersion=dispersion,
+                agent_states=agent_states,
+                agents=agents,
+                flock=flock,
+                daily_cycle=cycle,
+                stall=stall,
+                noise=noise,
+                conflict=conflict,
+                regroup_far=regroup_far,
+                roost_proximity=roost_proximity,
+                healthy_convergence=healthy_convergence,
+                formation=formation,
+            )
         call_density = _extract_call_density(raw)
+        acoustic_pressure = _extract_acoustic_pressure(raw)
 
         metrics = merge_metrics(
             {
@@ -636,6 +712,8 @@ class CrowAdapter(BaseAdapter):
             },
             coherence=coherence,
             call_density=call_density,
+            phase_deviation=phase_deviation if phase_deviation is not None else 0.0,
+            acoustic_pressure=acoustic_pressure,
         )
         if healthy_convergence:
             metrics = _crow_apply_convergence_calm(metrics, dissipation=dissipation)
@@ -678,7 +756,7 @@ class CrowAdapter(BaseAdapter):
                 VizEvent("reorganization", "Roost convergence underway", "low")
             )
         else:
-            if cycle == "evening_return" and roost_proximity >= 0.5:
+            if cycle in _CONVERGENCE_PHASES and roost_proximity >= 0.5:
                 events.append(
                     VizEvent("reorganization", "Roost convergence underway", "low")
                 )
@@ -719,6 +797,15 @@ class CrowAdapter(BaseAdapter):
             coherence=metrics["coherence"],
             call_density=metrics["call_density"],
         )
+        events = _merge_colony_events(events, colony)
+        if (phase_deviation or 0.0) >= 0.55:
+            events.append(
+                VizEvent(
+                    "pressure_spike",
+                    f"Phase deviation elevated ({phase_deviation:.2f})",
+                    "medium" if (phase_deviation or 0.0) < 0.75 else "high",
+                )
+            )
 
         return VizPacket(
             schema_version=VIZ_SCHEMA_VERSION,

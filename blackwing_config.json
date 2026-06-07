@@ -7,6 +7,10 @@
   "debug": {
     "enabled": false
   },
+  "simulation": {
+    "default_speed": 1.0,
+    "start_hour": 13.0
+  },
   "spawn": {
     "default_count": 3,
     "max_crows": 12,
@@ -34,6 +38,8 @@
   "roost": {
     "id": "north_yard",
     "name": "North Yard Roost",
+    "home_roost_id": "north_yard",
+    "traits": ["conservative", "stable"],
     "location": [0, 8, 0],
     "population": 20,
     "food_score": 0.72,
@@ -42,14 +48,54 @@
     "territory_radius": 45,
     "pilot_name": "Pilot",
     "pilot_trust": 0.92,
+    "roosts": [
+      {
+        "id": "north_yard",
+        "name": "North Yard Roost",
+        "active": true,
+        "traits": ["conservative", "stable"],
+        "location": [0, 8, 0],
+        "population": 20,
+        "food_score": 0.72,
+        "safety_score": 0.85,
+        "noise_level": 0.15,
+        "territory_radius": 45
+      },
+      {
+        "id": "industrial_park",
+        "name": "Industrial Park Roost",
+        "active": false,
+        "traits": ["exploratory", "aggressive"],
+        "location": [120, 10, -40],
+        "population": 14,
+        "food_score": 0.58,
+        "safety_score": 0.62,
+        "noise_level": 0.38,
+        "territory_radius": 38
+      },
+      {
+        "id": "schoolyard",
+        "name": "Schoolyard Roost",
+        "active": false,
+        "traits": ["social", "vigilant"],
+        "location": [-85, 9, 55],
+        "population": 26,
+        "food_score": 0.81,
+        "safety_score": 0.71,
+        "noise_level": 0.42,
+        "territory_radius": 32
+      }
+    ],
     "daily_cycle": {
       "compressed_cycle_minutes": 20,
       "simulated_hour": null,
-      "patrol_bearings": [0, 60, 120, 180, 240, 300],
-      "patrol_radius_fraction": 0.52,
+      "patrol_bearings": [0, 180],
+      "patrol_radius_fraction": 0.48,
       "patrol_altitude": 14.0,
       "waypoint_arrival": 7.0,
-      "waypoint_arrival_inner": 5.0,
+      "waypoint_arrival_inner": 8.0,
+      "waypoint_dwell_seconds": 4.0,
+      "morning_call_height": 6.0,
       "roost_perch_height": 2.0,
       "roost_approach_height": 5.0
     }

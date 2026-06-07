@@ -30,6 +30,8 @@ CORE_METRIC_KEYS = (
 OPTIONAL_METRIC_KEYS = (
     "coherence",
     "call_density",
+    "phase_deviation",
+    "acoustic_pressure",
 )
 
 METRIC_KEYS = CORE_METRIC_KEYS + OPTIONAL_METRIC_KEYS

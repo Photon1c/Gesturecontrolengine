@@ -86,6 +86,9 @@ class CrowPhysics:
 
         if controls.perch:
             lead.mode = "perch"
+            if colony is not None:
+                perch = colony.perch_target_for(lead.id, 0)
+                self._homing_toward(lead, perch, dt, snap=True)
             lead.vx *= max(0.0, 1.0 - perch_drag * dt)
             lead.vy *= max(0.0, 1.0 - perch_drag * dt)
             lead.vz *= max(0.0, 1.0 - perch_drag * dt)
@@ -155,8 +158,20 @@ class CrowPhysics:
             lead.yaw += yaw_rate * dt
             self._apply_bank_lateral(lead, controls, dt)
 
-        if not controls.perch:
+        homing = (
+            colony is not None
+            and controls.autonomous
+            and not controls.perch
+            and colony.homing_to_roost(lead)
+        )
+        if not controls.perch and not homing:
             self._maintain_min_forward(lead, dt)
+        if homing:
+            perch = colony.perch_target_for(lead.id, 0)
+            home = float(self.cfg.get("roost_home_strength", 4.0)) * dt
+            lead.vx += (perch[0] - lead.x) * home
+            lead.vy += (perch[1] - lead.y) * home * 1.25
+            lead.vz += (perch[2] - lead.z) * home
         if colony is not None:
             gx, gz = colony.guidance_force(lead, dt)
             lead.vx += gx * float(self.cfg.get("roost_guidance", 8.0))
@@ -348,12 +363,74 @@ class CrowPhysics:
             crow.y = ceiling_y
             crow.vy = min(0.0, crow.vy)
 
+    def _homing_toward(
+        self,
+        crow: CrowState,
+        target: tuple[float, float, float],
+        dt: float,
+        *,
+        snap: bool = False,
+    ) -> bool:
+        snap_strength = float(self.cfg.get("roost_snap_strength", 5.5))
+        arrival_dist = float(self.cfg.get("perch_arrival_distance", 1.6))
+        arrival_alt = float(self.cfg.get("perch_arrival_altitude", 1.1))
+        dx = target[0] - crow.x
+        dy = target[1] - crow.y
+        dz = target[2] - crow.z
+        dist_h = math.hypot(dx, dz)
+        alt_err = abs(dy)
+        strength = min(1.0, snap_strength * dt * (1.35 if snap else 1.0))
+        crow.x += dx * strength
+        crow.y += dy * strength
+        crow.z += dz * strength
+        arrived = dist_h < arrival_dist and alt_err < arrival_alt
+        if arrived or snap:
+            perch_drag = float(self.cfg.get("perch_drag", 4.0))
+            crow.vx *= max(0.0, 1.0 - perch_drag * dt)
+            crow.vy *= max(0.0, 1.0 - perch_drag * dt)
+            crow.vz *= max(0.0, 1.0 - perch_drag * dt)
+            crow.roll *= max(0.0, 1.0 - 2.0 * dt)
+        else:
+            follow = snap_strength * 0.45
+            crow.vx = dx * follow
+            crow.vy = dy * follow * 1.1
+            crow.vz = dz * follow
+        return arrived
+
     def _follow_flock(
         self, lead: CrowState, controls: FlightControls, dt: float
     ) -> None:
+        colony = self._colony
+        roost_mode = (
+            controls.perch
+            or lead.mode == "perch"
+            or (colony is not None and colony.wants_roost_perch())
+            or (
+                colony is not None
+                and controls.autonomous
+                and colony.homing_to_roost(lead)
+            )
+        )
+        if roost_mode and colony is not None:
+            snap = controls.perch or lead.mode == "perch"
+            for i, follower in enumerate(self.flock.crows[1:], start=1):
+                target = colony.perch_target_for(follower.id, i)
+                arrived = self._homing_toward(follower, target, dt, snap=snap)
+                follower.mode = "perch" if arrived else "glide"
+                if arrived:
+                    follower.pitch = -0.06
+                    follower.roll = 0.0
+                    follower.yaw = lead.yaw
+                else:
+                    dx = colony.roost.x - follower.x
+                    dz = colony.roost.z - follower.z
+                    follower.yaw = math.atan2(dx, dz)
+                    follower.pitch = lead.pitch * 0.7
+                follower.wing_phase = lead.wing_phase + i * 0.15
+            return
+
         behind = float(self.cfg.get("formation_spacing", 2.8))
         lateral = float(self.cfg.get("formation_lateral", 1.4))
-        colony = self._colony
         _lateral_scale = {
             "scout": 1.35,
             "sentinel": 0.72,
