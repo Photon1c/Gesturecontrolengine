@@ -34,6 +34,13 @@ except ImportError:
 
 try:
     from plugins.crow.pilot import BlackwingPilot
+    from plugins.crow.vps_export import (
+        DEFAULT_CONFIDENCE,
+        DEFAULT_EVENT_TYPE,
+        export_roost_snapshot,
+        telemetry_base_url,
+        try_export_from_url,
+    )
 
     BLACKWING_AVAILABLE = True
 except ImportError:
@@ -887,6 +894,44 @@ def run_jarvis_loop(config: dict[str, Any], jarvis_config_path: str) -> None:
     cv2.destroyAllWindows()
 
 
+def _blackwing_vps_export_cfg(blackwing_cfg: dict[str, Any]) -> dict[str, Any]:
+    raw = blackwing_cfg.get("vps_export")
+    return raw if isinstance(raw, dict) else {}
+
+
+def run_blackwing_export_sample(
+    config: dict[str, Any],
+    blackwing_config_path: str,
+    *,
+    dry_run: bool,
+) -> None:
+    """One-shot: read running Blackwing /api/state and emit via EventClient."""
+    if not BLACKWING_AVAILABLE:
+        print(
+            "[BLACKWING] plugins.crow not available for VPS export.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    blackwing_cfg = load_config(blackwing_config_path)
+    vps_cfg = _blackwing_vps_export_cfg(blackwing_cfg)
+    client = build_client(config, dry_run=dry_run)
+    base_url = telemetry_base_url(blackwing_cfg)
+    event_type = str(vps_cfg.get("event_type", DEFAULT_EVENT_TYPE))
+    confidence = float(vps_cfg.get("confidence", DEFAULT_CONFIDENCE))
+    event = try_export_from_url(
+        client,
+        base_url,
+        event_type=event_type,
+        confidence=confidence,
+    )
+    print(
+        f"[BLACKWING][VPS_EXPORT] sample sequence={event['sequence']} "
+        f"type={event['event_type']} dry_run={dry_run}",
+        flush=True,
+    )
+
+
 def run_blackwing_loop(config: dict[str, Any], blackwing_config_path: str) -> None:
     """Blackwing Pilot: camera pose drives crow flock physics + Three.js hangar."""
     if not BLACKWING_AVAILABLE:
@@ -911,6 +956,21 @@ def run_blackwing_loop(config: dict[str, Any], blackwing_config_path: str) -> No
 
     blackwing_cfg = load_config(blackwing_config_path)
     pilot = BlackwingPilot(blackwing_cfg)
+    vps_cfg = _blackwing_vps_export_cfg(blackwing_cfg)
+    vps_client: EventClient | None = None
+    vps_interval = float(vps_cfg.get("interval_seconds", 60))
+    vps_event_type = str(vps_cfg.get("event_type", DEFAULT_EVENT_TYPE))
+    vps_confidence = float(vps_cfg.get("confidence", DEFAULT_CONFIDENCE))
+    last_vps_export = 0.0
+    if bool(vps_cfg.get("enabled", False)):
+        vps_client = build_client(
+            config, dry_run=bool(vps_cfg.get("dry_run", False))
+        )
+        print(
+            f"[BLACKWING][VPS_EXPORT] enabled interval={vps_interval}s "
+            f"type={vps_event_type} dry_run={vps_client.dry_run}",
+            flush=True,
+        )
 
     ui = overlay_ui_config(config)
     font_scale = ui.font_scale
@@ -957,7 +1017,21 @@ def run_blackwing_loop(config: dict[str, Any], blackwing_config_path: str) -> No
                 pose_result, hands_result = vision_tasks.process(rgb)
 
                 now = time.time()
-                pilot.update(now, pose_result, dt)
+                telemetry = pilot.update(now, pose_result, dt)
+                if vps_client is not None and now - last_vps_export >= vps_interval:
+                    last_vps_export = now
+                    try:
+                        export_roost_snapshot(
+                            vps_client,
+                            telemetry,
+                            event_type=vps_event_type,
+                            confidence=vps_confidence,
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[BLACKWING][VPS_EXPORT] failed: {exc}",
+                            flush=True,
+                        )
 
                 pose_ok = bool(pose_result.pose_landmarks)
                 n_hands = len(hands_result.multi_hand_landmarks or [])
@@ -1085,6 +1159,11 @@ def parse_args() -> argparse.Namespace:
         help="Path to JARVIS plugin config JSON",
     )
     parser.add_argument(
+        "--blackwing-export-sample",
+        action="store_true",
+        help="Emit one Blackwing roost/crow snapshot from running /api/state via EventClient",
+    )
+    parser.add_argument(
         "--blackwing",
         action="store_true",
         help="Activate Blackwing crow pilot (camera-driven flock + Three.js hangar)",
@@ -1119,6 +1198,12 @@ def main() -> None:
 
     if args.jarvis:
         run_jarvis_loop(config, args.jarvis_config)
+        return
+
+    if args.blackwing_export_sample:
+        run_blackwing_export_sample(
+            config, args.blackwing_config, dry_run=args.dry_run
+        )
         return
 
     if args.blackwing:

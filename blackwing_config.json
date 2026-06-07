@@ -4,6 +4,13 @@
     "host": "127.0.0.1",
     "port": 8765
   },
+  "vps_export": {
+    "enabled": false,
+    "dry_run": false,
+    "interval_seconds": 60,
+    "event_type": "blackwing.roost.snapshot",
+    "confidence": 0.95
+  },
   "debug": {
     "enabled": false
   },
