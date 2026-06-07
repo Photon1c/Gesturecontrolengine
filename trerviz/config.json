@@ -1,0 +1,18 @@
+{
+  "poll_interval_seconds": 1.0,
+  "history_length": 120,
+  "snapshot_dir": "trerviz/snapshots",
+  "sources": {
+    "crow": {
+      "type": "http",
+      "url": "http://127.0.0.1:8765/api/state",
+      "timeout": 1.5
+    },
+    "infrastructure": {
+      "type": "demo"
+    },
+    "market": {
+      "type": "demo"
+    }
+  }
+}

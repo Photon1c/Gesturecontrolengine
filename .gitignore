@@ -28,3 +28,6 @@ logs/
 
 # MediaPipe Tasks models (downloaded on first run; large binaries)
 models/*.task
+
+# Blackwing Vite hangar
+plugins/crow/hangar/node_modules/

@@ -32,6 +32,13 @@ try:
 except ImportError:
     JARVIS_AVAILABLE = False
 
+try:
+    from plugins.crow.pilot import BlackwingPilot
+
+    BLACKWING_AVAILABLE = True
+except ImportError:
+    BLACKWING_AVAILABLE = False
+
 
 class ArmStateMachine:
     """Local mirror of execute-arming flow for operator observability.
@@ -880,6 +887,142 @@ def run_jarvis_loop(config: dict[str, Any], jarvis_config_path: str) -> None:
     cv2.destroyAllWindows()
 
 
+def run_blackwing_loop(config: dict[str, Any], blackwing_config_path: str) -> None:
+    """Blackwing Pilot: camera pose drives crow flock physics + Three.js hangar."""
+    if not BLACKWING_AVAILABLE:
+        print(
+            "[BLACKWING] plugins.crow not available. Ensure the plugins/crow/ directory exists.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    import cv2  # type: ignore
+
+    sensor_cfg = config["sensor"]
+    camera_index = int(sensor_cfg.get("camera_index", 0))
+    mirror = bool(sensor_cfg.get("mirror_preview", True))
+
+    cap = open_video_capture(camera_index)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open camera index {camera_index}.")
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(sensor_cfg.get("frame_width", 640)))
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(sensor_cfg.get("frame_height", 480)))
+
+    blackwing_cfg = load_config(blackwing_config_path)
+    pilot = BlackwingPilot(blackwing_cfg)
+
+    ui = overlay_ui_config(config)
+    font_scale = ui.font_scale
+    draw_landmarks = bool(config.get("debug", {}).get("draw_landmarks", True))
+    win_title = "Blackwing Pilot — Corvid Flight Lab"
+    cv2.namedWindow(win_title, cv2.WINDOW_NORMAL)
+    _resize_debug_window(win_title, ui, fullscreen=False)
+
+    hangar_url = pilot.ensure_telemetry()
+    print("[BLACKWING] Starting…", flush=True)
+    print(pilot.system_prompt(), flush=True)
+    hangar_mode = pilot.hangar_mode()
+    print(f"[BLACKWING] Crow Hangar: {hangar_url} ({hangar_mode})", flush=True)
+    if hangar_mode == "legacy":
+        print(
+            "[BLACKWING] Build the Vite hangar: cd plugins/crow/hangar && npm install && npm run build",
+            flush=True,
+        )
+    print("=" * 58, flush=True)
+
+    t_prev = time.perf_counter()
+    fps_ema = 0.0
+
+    mp_cfg = config.get("mediapipe") if isinstance(config.get("mediapipe"), dict) else None
+
+    try:
+        with MediaPipeTasksVision(sensor_cfg, mp_cfg) as vision_tasks:
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    time.sleep(0.05)
+                    continue
+
+                t_now = time.perf_counter()
+                dt = min(t_now - t_prev, 0.1)
+                t_prev = t_now
+                inst = 1.0 / dt if dt > 1e-6 else 0.0
+                fps_ema = inst if fps_ema <= 0 else 0.85 * fps_ema + 0.15 * inst
+
+                if mirror:
+                    frame = cv2.flip(frame, 1)
+
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pose_result, hands_result = vision_tasks.process(rgb)
+
+                now = time.time()
+                pilot.update(now, pose_result, dt)
+
+                pose_ok = bool(pose_result.pose_landmarks)
+                n_hands = len(hands_result.multi_hand_landmarks or [])
+                fw = frame.shape[1]
+                hud_tail = _truncate_hud_line(pilot.hud_line(), max(48, fw // 8))
+
+                debug_line = pilot.debug_line()
+                if ui.compact_hud:
+                    hud_lines = [
+                        f"Blackwing | cam{camera_index} | FPS~{fps_ema:.0f}",
+                        f"pose:{'yes' if pose_ok else 'no'} | hands:{n_hands} | {hud_tail}",
+                        f"Hangar: {hangar_url}",
+                    ]
+                    footer = (
+                        "Q/Esc quit | A auto/manual | D debug"
+                        if debug_line
+                        else "Q/Esc quit | A auto/manual"
+                    )
+                else:
+                    hud_lines = [
+                        "Blackwing Pilot — body-to-bird flight controller",
+                        f"Camera {camera_index} | FPS ~{fps_ema:.0f}",
+                        f"Pose: {'YES' if pose_ok else 'no'}  |  Hands: {n_hands}",
+                        hud_tail,
+                        f"Crow Hangar: {hangar_url}",
+                        "Flap for lift · wide arms glide · bank with arm height",
+                    ]
+                    footer = (
+                        "Q/Esc quit | A auto/manual | D debug"
+                        if debug_line
+                        else "Q/Esc quit | A auto/manual"
+                    )
+
+                draw_accessible_hud(
+                    frame,
+                    hud_lines,
+                    footer=footer,
+                    font_scale=font_scale,
+                    compact=ui.compact_hud,
+                )
+
+                if draw_landmarks:
+                    draw_tasks_landmarks(
+                        frame,
+                        pose_result,
+                        hands_result,
+                        draw_pose=True,
+                        draw_hands=True,
+                    )
+
+                cv2.imshow(win_title, frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("q"), 27):
+                    break
+                if key in (ord("a"), ord("A")):
+                    mode = "AUTO" if pilot.toggle_auto_mode() else "MANUAL"
+                    print(f"[BLACKWING] Control mode: {mode}", flush=True)
+                if key == ord("d") and debug_line:
+                    print(f"[BLACKWING][DEBUG] {debug_line}", flush=True)
+    finally:
+        pilot.close()
+        cap.release()
+        cv2.destroyAllWindows()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="MediaPipe gesture + presence edge sensor"
@@ -941,6 +1084,17 @@ def parse_args() -> argparse.Namespace:
         default="jarvis_config.json",
         help="Path to JARVIS plugin config JSON",
     )
+    parser.add_argument(
+        "--blackwing",
+        action="store_true",
+        help="Activate Blackwing crow pilot (camera-driven flock + Three.js hangar)",
+    )
+    parser.add_argument(
+        "--blackwing-config",
+        type=str,
+        default="blackwing_config.json",
+        help="Path to Blackwing plugin config JSON",
+    )
     return parser.parse_args()
 
 
@@ -965,6 +1119,10 @@ def main() -> None:
 
     if args.jarvis:
         run_jarvis_loop(config, args.jarvis_config)
+        return
+
+    if args.blackwing:
+        run_blackwing_loop(config, args.blackwing_config)
         return
 
     client = build_client(config, dry_run=args.dry_run)

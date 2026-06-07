@@ -41,6 +41,24 @@ Out of scope for this MVP:
 - `AGENT_MONITORING.md` — runbook for the monitoring agent
 - `deploy/systemd/conferenceroom-sensor-ingestion.service` — default systemd unit
 - `scripts/install_systemd_service.sh` — systemd installer/generator script
+- `trerviz/` — optional TRER metrics visualizer (adapter-based; does not modify core engine)
+- `requirements-trerviz.txt` — Streamlit dashboard deps (optional)
+
+---
+
+## TRER Visualizer (`trerviz/`)
+
+Optional real-time metrics dashboard for plugin state (crow, infrastructure, market).
+Polls existing HTTP state endpoints (e.g. Crow `GET /api/state`), falls back to snapshot
+files or demo mode. No core engine refactor required.
+
+```powershell
+pip install -r requirements-trerviz.txt
+streamlit run trerviz/app.py
+```
+
+With live Crow telemetry: run `python sensor_engine.py --blackwing` in another terminal.
+See **`trerviz/README.md`** for adapters, normalized packet schema, and gepa-viz snapshot paths.
 
 ---
 
