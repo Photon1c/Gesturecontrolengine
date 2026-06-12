@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover
 def _format_metric(key: str, value: float) -> str:
     if key == "call_density":
         return f"{value:.0f}/min"
-    if key in ("phase_deviation", "acoustic_pressure", "coherence"):
+    if key in ("phase_deviation", "acoustic_pressure", "coherence", "information_velocity"):
         return f"{value:.2f}"
     return f"{value:.2f}"
 

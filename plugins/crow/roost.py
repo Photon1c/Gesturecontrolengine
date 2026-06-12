@@ -29,6 +29,7 @@ from .colony_cycle import (
     schedule_phase,
     trait_scalar,
 )
+from .environment import EnvironmentLayer
 from .physics import CrowState
 
 
@@ -39,6 +40,9 @@ AGENT_STATES = (
     "RETURNING",
     "FOLLOWING_PLAYER",
     "ALARMED",
+    "ESCAPE",
+    "DRINKING",
+    "WAITING",
 )
 
 DAILY_PHASES = (
@@ -148,6 +152,8 @@ class Colony:
         self._waypoint_index = 0
         self._waypoint_dwell = 0.0
         self._patrol_points = self._build_patrol_points()
+        self._sim_clock = 0.0
+        self._environment = EnvironmentLayer(cfg.get("environment", {}))
 
     def _roost_from_entry(self, entry: dict[str, Any]) -> Roost:
         loc = entry.get("location", [0, 8, 0])
@@ -196,6 +202,13 @@ class Colony:
     @property
     def schedule_phase(self) -> str:
         return self._schedule_phase
+
+    @property
+    def environment(self) -> EnvironmentLayer:
+        return self._environment
+
+    def escape_active(self) -> bool:
+        return self._environment.escape_active(self._sim_clock)
 
     def _build_patrol_points(self) -> list[tuple[float, float, float]]:
         bearings = self._cycle_cfg.get(
@@ -294,7 +307,14 @@ class Colony:
         return target
 
     def routine_target(self, crow: CrowState, sim_dt: float = 0.033) -> tuple[float, float, float]:
-        """Schedule-aware waypoint — perch, return, outbound, or patrol transit."""
+        """Schedule-aware waypoint — perch, return, resource, escape, or patrol transit."""
+        if self._environment.enabled:
+            if self._environment.escape_active(self._sim_clock):
+                return self._environment.escape_target(crow)
+            resource = self._environment.resource_target_for(crow, self._schedule_phase)
+            if resource is not None and not self._environment.alert_active():
+                return resource
+
         if self._schedule_phase in SCHEDULE_ROOST_PERCH:
             return self._roost_perch_target()
 
@@ -314,6 +334,8 @@ class Colony:
         return self._roost_perch_target()
 
     def _auto_agent_state(self, dist_home: float) -> str:
+        if self._environment.escape_active(self._sim_clock):
+            return "ESCAPE"
         phase = self._schedule_phase
         if phase in SCHEDULE_ROOST_PERCH:
             return "PERCHING"
@@ -384,6 +406,7 @@ class Colony:
         sim_dt: float = 0.033,
     ) -> None:
         ts = wall_ts if wall_ts is not None else time.time()
+        self._sim_clock = float(ts)
         self._last_sim_dt = sim_dt
         hour = resolve_cycle_hour(ts, self._cycle_cfg)
         self._cycle_hour = hour
@@ -396,6 +419,16 @@ class Colony:
 
         if player_tracking and not self._greeted:
             self._greeted = True
+
+        self._environment.update(
+            crows,
+            self._agents,
+            schedule_phase=self._schedule_phase,
+            player_control=player_control,
+            player_tracking=player_tracking,
+            sim_clock=self._sim_clock,
+            sim_dt=sim_dt,
+        )
 
         for i, crow in enumerate(crows):
             agent = self.ensure_agent(crow, lead=i == 0)
@@ -414,6 +447,11 @@ class Colony:
                     agent.state = "PERCHING"
                 else:
                     agent.state = "FORAGING"
+                override = self._environment.agent_state_override(
+                    agent, sim_clock=self._sim_clock, player_control=player_control
+                )
+                if override:
+                    agent.state = override
             elif player_control and player_tracking and not player_perch:
                 agent.state = "FOLLOWING_PLAYER"
             elif not player_control:
@@ -429,12 +467,20 @@ class Colony:
             else:
                 agent.state = "PERCHING"
 
+            override = self._environment.agent_state_override(
+                agent, sim_clock=self._sim_clock, player_control=player_control
+            )
+            if override:
+                agent.state = override
+
             agent.energy = max(0.0, min(1.0, agent.energy - 0.001))
             if crow.mode == "flap":
                 agent.energy = min(1.0, agent.energy + 0.004)
             agent.curiosity = min(1.0, agent.curiosity + 0.0005)
 
-        self._update_colony_metrics(crows, player_control=player_control)
+        self._update_colony_metrics(
+            crows, player_control=player_control, player_tracking=player_tracking
+        )
 
     def distance_to_roost(self, crow: CrowState) -> float:
         return math.hypot(crow.x - self.roost.x, crow.z - self.roost.z)
@@ -472,7 +518,7 @@ class Colony:
         ]
 
     def _update_colony_metrics(
-        self, crows: list[CrowState], *, player_control: bool
+        self, crows: list[CrowState], *, player_control: bool, player_tracking: bool = False
     ) -> None:
         agents_payload = [
             {
@@ -497,8 +543,15 @@ class Colony:
         self._phase_deviation = phase_deviation(
             self._schedule_phase, self._observed_behavior
         )
-        disturbance = self._observed_behavior == "disturbance_response" or (
-            player_control and any(s == "FOLLOWING_PLAYER" for s in agent_states)
+        disturbance = (
+            self._observed_behavior == "disturbance_response"
+            or self._environment.escape_active(self._sim_clock)
+            or (player_control and any(s == "FOLLOWING_PLAYER" for s in agent_states))
+            or (
+                not player_control
+                and player_tracking
+                and self._environment.alert_active()
+            )
         )
         self._coherence = compute_coherence(
             agent_states=agent_states,
@@ -518,6 +571,9 @@ class Colony:
             trait_mods=self._trait_mods,
             disturbance_active=disturbance,
         )
+        p_mod, c_mod = self._environment.metric_modifiers()
+        self._pressure = max(0.0, min(1.0, self._pressure + p_mod))
+        self._coherence = max(0.0, min(1.0, self._coherence + c_mod))
         self._call_density = estimate_call_density(
             self._schedule_phase, self._trait_mods
         )
@@ -532,6 +588,7 @@ class Colony:
             observed_behavior=self._observed_behavior,
             disturbance_active=disturbance,
         )
+        self._colony_events.extend(self._environment.events)
 
     def spawn_offset(self, index: int, total: int) -> tuple[float, float, float]:
         spread = 2.2
@@ -561,9 +618,11 @@ class Colony:
             "pressure": round(self._pressure, 3),
             "call_density": round(self._call_density, 2),
             "acoustic_pressure": round(self._acoustic_pressure, 3),
+            "information_velocity": round(self._environment.information_velocity, 3),
             "legacy_daily_cycle": self._legacy_phase,
             "phase_note": self._phase_note,
             "events": self._colony_events,
+            "environment": self._environment.to_telemetry(self._sim_clock),
             "greeting": greeting,
             "agents": [
                 {

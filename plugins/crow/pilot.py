@@ -21,6 +21,17 @@ class BlackwingPilot:
     def __init__(self, cfg: dict[str, Any]) -> None:
         self.cfg = cfg
         self._enabled = bool(cfg.get("enabled", True))
+        self._mode = str(cfg.get("mode", "static")).strip().lower()
+        if self._mode not in ("static", "dynamic"):
+            self._mode = "static"
+        self._market_bridge = None
+        if self._mode == "dynamic":
+            try:
+                from plugins.market.bridge import MarketBridge
+
+                self._market_bridge = MarketBridge(cfg.get("market", {}))
+            except ImportError:
+                self._market_bridge = None
         self._hud_cfg = cfg.get("hud", {})
         self._debug_cfg = cfg.get("debug", {})
         auto_cfg = cfg.get("auto_mode", {})
@@ -30,6 +41,8 @@ class BlackwingPilot:
         roost_cfg = dict(cfg.get("roost", {}))
         if "daily_cycle" not in roost_cfg:
             roost_cfg["daily_cycle"] = cfg.get("daily_cycle", {})
+        if cfg.get("environment"):
+            roost_cfg["environment"] = cfg.get("environment")
         self._colony = Colony(roost_cfg)
         self._physics = CrowPhysics(cfg.get("physics", {}), self._colony)
         spawn_cfg = dict(cfg.get("spawn", {}))
@@ -224,6 +237,10 @@ class BlackwingPilot:
             tracking_confidence=tracking_confidence,
             input_registered=input_registered,
         )
+        if self._market_bridge is not None:
+            telemetry["market"] = self._market_bridge.telemetry_slice()
+        elif self._mode == "dynamic":
+            telemetry["market"] = {"mode": "dynamic", "available": False, "error": "market bridge unavailable"}
         return telemetry
 
     def _boot_payload(self) -> dict[str, Any]:
@@ -257,6 +274,7 @@ class BlackwingPilot:
             },
             "launch": self._launch_meta(),
             "simulation_speed": round(self._simulation_speed, 2),
+            "blackwing_mode": self._mode,
         }
 
     def _hud_display_cfg(self) -> dict[str, Any]:
@@ -334,6 +352,10 @@ class BlackwingPilot:
             tracking_confidence=confidence if player_control else 0.0,
             input_registered=input_registered,
         )
+        if self._market_bridge is not None:
+            telemetry["market"] = self._market_bridge.telemetry_slice()
+        elif self._mode == "dynamic":
+            telemetry["market"] = {"mode": "dynamic", "available": False, "error": "market bridge unavailable"}
         if self._debug_cfg.get("enabled", False):
             telemetry["debug"] = self._flight.debug_snapshot()
         self._telemetry.publish(telemetry)

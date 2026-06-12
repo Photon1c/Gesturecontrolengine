@@ -37,6 +37,9 @@ def _agents_by_id(agents: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 # Flight-state stress weights for per-node field pressure.
 _CROW_STATE_STRESS = {
     "ALARMED": 0.95,
+    "DRINKING": 0.08,
+    "WAITING": 0.18,
+    "ESCAPE": 0.88,
     "RETURNING": 0.55,
     "FOLLOWING_PLAYER": 0.4,
     "FORAGING": 0.35,
@@ -597,6 +600,7 @@ class CrowAdapter(BaseAdapter):
         colony_coherence = _extract_colony_float(colony, "coherence")
         colony_pressure = _extract_colony_float(colony, "pressure")
         phase_deviation = _extract_colony_float(colony, "phase_deviation")
+        info_velocity = _extract_colony_float(colony, "information_velocity")
         territory = float(roost.get("territory_radius", 45.0))
         noise = float(roost.get("noise_level", 0.15))
         safety = float(roost.get("safety_score", 0.85))
@@ -714,6 +718,7 @@ class CrowAdapter(BaseAdapter):
             call_density=call_density,
             phase_deviation=phase_deviation if phase_deviation is not None else 0.0,
             acoustic_pressure=acoustic_pressure,
+            information_velocity=info_velocity if info_velocity is not None else 0.0,
         )
         if healthy_convergence:
             metrics = _crow_apply_convergence_calm(metrics, dissipation=dissipation)
@@ -959,10 +964,89 @@ class MarketAdapter(BaseAdapter):
     plugin = "market"
 
     def adapt(self, raw: dict[str, Any], *, source: str) -> VizPacket:
-        infra = InfrastructureAdapter()
-        packet = infra.adapt(raw, source=source)
-        packet.plugin = self.plugin
-        return packet
+        if (
+            int(raw.get("schema_version", 0)) == VIZ_SCHEMA_VERSION
+            and str(raw.get("plugin", "")) == self.plugin
+            and isinstance(raw.get("metrics"), dict)
+        ):
+            packet = VizPacket.from_dict(raw)
+            packet.source = source
+            packet.raw = raw
+            return packet
+
+        metrics_raw = raw.get("metrics") if isinstance(raw.get("metrics"), dict) else raw
+        phase = str(raw.get("phase", "patrol"))
+        symbol = str(raw.get("symbol", "SPY"))
+        spot = float((raw.get("raw") or {}).get("spot", 0.0) or 0.0)
+        scale = max(abs(spot), 1.0)
+
+        fields = []
+        for item in raw.get("fields") or []:
+            fields.append(
+                VizField(
+                    id=str(item.get("id", "")),
+                    x=float(item.get("x", 0.0)),
+                    y=float(item.get("y", 0.0)),
+                    pressure=float(item.get("pressure", 0.0)),
+                    radius=float(item.get("radius", 1.0)),
+                    label=str(item.get("label", "")),
+                )
+            )
+        if not fields:
+            hybrid = next(
+                (a for a in raw.get("attractors") or [] if a.get("source") == "hybrid"),
+                {},
+            )
+            att_pos = float(hybrid.get("position", spot))
+            fields = [
+                VizField(symbol, 0.0, 0.0, float(metrics_raw.get("pressure", 0.0)), 4.0, symbol),
+                VizField(
+                    str(hybrid.get("id", f"{symbol.lower()}_hybrid_attractor")),
+                    (att_pos - spot) / scale * 10.0,
+                    float(metrics_raw.get("attractor_strength", 0.0)) * 5.0,
+                    float(metrics_raw.get("attractor_strength", 0.0)),
+                    1.0 + float(metrics_raw.get("attractor_stability", 0.0)),
+                    "Hybrid attractor",
+                ),
+            ]
+
+        events = [
+            VizEvent(
+                type=str(item.get("type", "info")),
+                message=str(item.get("message", "")),
+                severity=str(item.get("severity", "low")),
+            )
+            for item in raw.get("events") or []
+        ]
+        pressure = float(metrics_raw.get("pressure", 0.0))
+        if phase == "rupture" and pressure > 0.5:
+            events.append(
+                VizEvent("rupture_warning", f"{symbol} escaping strong attractor", "high")
+            )
+        elif phase == "convergence":
+            events.append(VizEvent("convergence", f"{symbol} moving toward attractor", "low"))
+
+        return VizPacket(
+            schema_version=VIZ_SCHEMA_VERSION,
+            plugin=self.plugin,
+            timestamp=str(raw.get("timestamp", _iso_now())),
+            phase=phase,
+            metrics=merge_metrics(
+                {
+                    "pressure": pressure,
+                    "coherence": float(metrics_raw.get("coherence", 0.0)),
+                    "criticality": float(metrics_raw.get("criticality", 0.0)),
+                    "dissipation": float(metrics_raw.get("dissipation", 0.0)),
+                    "velocity": float(metrics_raw.get("velocity", 0.0)),
+                    "acceleration": float(metrics_raw.get("acceleration", 0.0)),
+                    "rupture_risk": float(metrics_raw.get("rupture_risk", 0.0)),
+                }
+            ),
+            fields=fields,
+            events=events,
+            source=source,
+            raw=raw,
+        )
 
     def demo(self, *, t: float | None = None) -> VizPacket:
         t = time.time() if t is None else t

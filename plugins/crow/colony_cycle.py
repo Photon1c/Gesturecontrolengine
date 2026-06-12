@@ -223,9 +223,16 @@ def infer_observed_behavior(
     patrolling = sum(1 for s in clean if s == "PATROLLING") / n
     foraging = sum(1 for s in clean if s == "FORAGING") / n
     alarmed = sum(1 for s in clean if s == "ALARMED") / n
+    escaping = sum(1 for s in clean if s == "ESCAPE") / n
+    drinking = sum(1 for s in clean if s == "DRINKING") / n
+    waiting = sum(1 for s in clean if s == "WAITING") / n
 
+    if escaping >= 0.35 or (alarmed >= 0.25 and escaping >= 0.15):
+        return "disturbance_response"
     if alarmed >= 0.25:
         return "disturbance_response"
+    if (drinking + waiting) >= 0.4 and dispersion <= 0.45:
+        return "socializing"
     if returning >= 0.35:
         return "returning"
     if perch >= 0.6 and roost_proximity >= 0.55:

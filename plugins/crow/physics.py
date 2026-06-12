@@ -164,18 +164,36 @@ class CrowPhysics:
             and not controls.perch
             and colony.homing_to_roost(lead)
         )
-        if not controls.perch and not homing:
+        escaping = (
+            colony is not None
+            and controls.autonomous
+            and not controls.perch
+            and colony.escape_active()
+        )
+        if not controls.perch and not homing and not escaping:
             self._maintain_min_forward(lead, dt)
-        if homing:
+        if escaping:
+            ex, ez = colony.environment.escape_guidance(
+                lead, dt, strength=float(self.cfg.get("escape_guidance", 8.5))
+            )
+            lead.vx += ex
+            lead.vz += ez
+            lead.vy += float(self.cfg.get("escape_climb", 2.4)) * dt
+            lead.mode = "flap"
+            boost = float(self.cfg.get("escape_speed_boost", 1.35))
+            lead.vx *= boost
+            lead.vz *= boost
+        elif homing:
             perch = colony.perch_target_for(lead.id, 0)
             home = float(self.cfg.get("roost_home_strength", 4.0)) * dt
             lead.vx += (perch[0] - lead.x) * home
             lead.vy += (perch[1] - lead.y) * home * 1.25
             lead.vz += (perch[2] - lead.z) * home
         if colony is not None:
-            gx, gz = colony.guidance_force(lead, dt)
-            lead.vx += gx * float(self.cfg.get("roost_guidance", 8.0))
-            lead.vz += gz * float(self.cfg.get("roost_guidance", 8.0))
+            if not escaping:
+                gx, gz = colony.guidance_force(lead, dt)
+                lead.vx += gx * float(self.cfg.get("roost_guidance", 8.0))
+                lead.vz += gz * float(self.cfg.get("roost_guidance", 8.0))
 
         wing_rate = float(self.cfg.get("wing_phase_rate", 9.5))
         lead.wing_phase = (lead.wing_phase + effective_flap * wing_rate * dt) % (
@@ -401,6 +419,47 @@ class CrowPhysics:
         self, lead: CrowState, controls: FlightControls, dt: float
     ) -> None:
         colony = self._colony
+        if (
+            colony is not None
+            and controls.autonomous
+            and colony.escape_active()
+        ):
+            env = colony.environment
+            for i, follower in enumerate(self.flock.crows[1:], start=1):
+                target = env.scatter_target(follower, i, lead)
+                self._homing_toward(follower, target, dt, snap=False)
+                follower.mode = "flap"
+                threat = env.threat_position()
+                if threat:
+                    ex, ez = env.escape_vector(follower, threat)
+                    follower.yaw = math.atan2(ex, ez)
+                else:
+                    follower.yaw = lead.yaw
+                follower.pitch = lead.pitch * 0.85
+                follower.roll = lead.roll * 0.7
+                follower.wing_phase = lead.wing_phase + i * 0.2
+            return
+
+        if colony is not None and controls.autonomous and not colony.escape_active():
+            resource_followers = False
+            for i, follower in enumerate(self.flock.crows[1:], start=1):
+                agent = colony.get_agent(follower.id)
+                if agent is None or agent.state not in ("DRINKING", "WAITING"):
+                    continue
+                resource_followers = True
+                target = colony.environment.resource_target_for(
+                    follower, colony.schedule_phase
+                )
+                if target:
+                    self._homing_toward(
+                        follower, target, dt, snap=agent.state == "DRINKING"
+                    )
+                    follower.mode = "perch" if agent.state == "DRINKING" else "glide"
+                    follower.yaw = lead.yaw
+                    follower.wing_phase = lead.wing_phase + i * 0.12
+            if resource_followers:
+                return
+
         roost_mode = (
             controls.perch
             or lead.mode == "perch"

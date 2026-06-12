@@ -24,10 +24,75 @@ class RoutineAutoPilot:
     ) -> FlightControls:
         schedule = colony.schedule_phase
         legacy = colony.cycle_phase
+        lead_agent = colony.get_agent(lead.id)
+        if lead_agent and lead_agent.state == "DRINKING":
+            self._turn_smooth *= 0.85
+            self._pitch_smooth *= 0.85
+            return FlightControls(
+                flap_power=0.0,
+                wingspan=0.14,
+                bank_steering=0.0,
+                pitch=-0.05,
+                glide=False,
+                perch=True,
+                tracking=True,
+                autonomous=True,
+            )
+        if lead_agent and lead_agent.state == "WAITING":
+            target = colony.environment.resource_target_for(lead, schedule)
+            if target:
+                dx = target[0] - lead.x
+                dz = target[2] - lead.z
+                dist_h = math.hypot(dx, dz)
+                if dist_h > 1.0:
+                    desired_yaw = math.atan2(dx, dz)
+                    yaw_err = math.atan2(
+                        math.sin(desired_yaw - lead.yaw),
+                        math.cos(desired_yaw - lead.yaw),
+                    )
+                    self._turn_smooth = 0.2 * max(-0.4, min(0.4, yaw_err * 0.6)) + 0.8 * self._turn_smooth
+            return FlightControls(
+                flap_power=0.0,
+                wingspan=0.52,
+                bank_steering=round(self._turn_smooth, 4),
+                pitch=0.0,
+                glide=True,
+                perch=False,
+                tracking=True,
+                autonomous=True,
+            )
+
         target = colony.routine_target(lead, sim_dt)
 
         arrive_dist = float(self.cfg.get("perch_arrival_distance", 1.6))
         arrive_alt = float(self.cfg.get("perch_arrival_altitude", 1.1))
+
+        if colony.escape_active():
+            target = colony.environment.escape_target(lead)
+            dx = target[0] - lead.x
+            dz = target[2] - lead.z
+            dy = target[1] - lead.y
+            dist_h = math.hypot(dx, dz)
+            desired_yaw = math.atan2(dx, dz) if dist_h > 1.0 else lead.yaw
+            yaw_err = math.atan2(
+                math.sin(desired_yaw - lead.yaw),
+                math.cos(desired_yaw - lead.yaw),
+            )
+            turn_raw = max(-1.0, min(1.0, yaw_err * float(self.cfg.get("turn_gain", 0.85))))
+            self._turn_smooth = 0.45 * turn_raw + 0.55 * self._turn_smooth
+            pitch_raw = max(-0.2, min(0.45, -dy * float(self.cfg.get("altitude_pitch_gain", 0.12))))
+            self._pitch_smooth = 0.4 * pitch_raw + 0.6 * self._pitch_smooth
+            flap = float(self.cfg.get("escape_flap_power", 0.55))
+            return FlightControls(
+                flap_power=round(flap, 4),
+                wingspan=0.42,
+                bank_steering=round(self._turn_smooth, 4),
+                pitch=round(self._pitch_smooth, 4),
+                glide=False,
+                perch=False,
+                tracking=True,
+                autonomous=True,
+            )
 
         if schedule in SCHEDULE_ROOST_PERCH or legacy == "night_roost":
             perch_target = colony.roost_perch_target()

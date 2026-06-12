@@ -932,7 +932,12 @@ def run_blackwing_export_sample(
     )
 
 
-def run_blackwing_loop(config: dict[str, Any], blackwing_config_path: str) -> None:
+def run_blackwing_loop(
+    config: dict[str, Any],
+    blackwing_config_path: str,
+    *,
+    mode: str = "static",
+) -> None:
     """Blackwing Pilot: camera pose drives crow flock physics + Three.js hangar."""
     if not BLACKWING_AVAILABLE:
         print(
@@ -955,6 +960,7 @@ def run_blackwing_loop(config: dict[str, Any], blackwing_config_path: str) -> No
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(sensor_cfg.get("frame_height", 480)))
 
     blackwing_cfg = load_config(blackwing_config_path)
+    blackwing_cfg["mode"] = mode if mode in ("static", "dynamic") else "static"
     pilot = BlackwingPilot(blackwing_cfg)
     vps_cfg = _blackwing_vps_export_cfg(blackwing_cfg)
     vps_client: EventClient | None = None
@@ -981,6 +987,7 @@ def run_blackwing_loop(config: dict[str, Any], blackwing_config_path: str) -> No
 
     hangar_url = pilot.ensure_telemetry()
     print("[BLACKWING] Starting…", flush=True)
+    print(f"[BLACKWING] Mode: {blackwing_cfg.get('mode', 'static')}", flush=True)
     print(pilot.system_prompt(), flush=True)
     hangar_mode = pilot.hangar_mode()
     print(f"[BLACKWING] Crow Hangar: {hangar_url} ({hangar_mode})", flush=True)
@@ -1168,6 +1175,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Activate Blackwing crow pilot (camera-driven flock + Three.js hangar)",
     )
+    bw_mode = parser.add_mutually_exclusive_group()
+    bw_mode.add_argument(
+        "--static",
+        action="store_true",
+        help="Blackwing fixed roost colony (default when --blackwing is used)",
+    )
+    bw_mode.add_argument(
+        "--dynamic",
+        action="store_true",
+        help="Blackwing + market attractor layer from local stock/option CSVs",
+    )
     parser.add_argument(
         "--blackwing-config",
         type=str,
@@ -1207,7 +1225,8 @@ def main() -> None:
         return
 
     if args.blackwing:
-        run_blackwing_loop(config, args.blackwing_config)
+        bw_mode = "dynamic" if args.dynamic else "static"
+        run_blackwing_loop(config, args.blackwing_config, mode=bw_mode)
         return
 
     client = build_client(config, dry_run=args.dry_run)

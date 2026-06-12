@@ -1,5 +1,6 @@
 {
   "enabled": true,
+  "mode": "static",
   "telemetry": {
     "host": "127.0.0.1",
     "port": 8765
@@ -10,6 +11,76 @@
     "interval_seconds": 60,
     "event_type": "blackwing.roost.snapshot",
     "confidence": 0.95
+  },
+  "market": {
+    "ticker": "SPY",
+    "stock_root": "F:/inputs/stocks",
+    "options_root": "F:/inputs/options/log",
+    "price_window": 20,
+    "spot_band_pct": 0.08,
+    "options_weight": 0.45,
+    "velocity_lookback": 5,
+    "refresh_seconds": 60,
+    "snapshot_path": "trerviz/snapshots/market_latest.json"
+  },
+  "environment": {
+    "enabled": true,
+    "nodes": [
+      {
+        "id": "north_yard_roost",
+        "type": "fixed",
+        "name": "North Yard Roost",
+        "location": [0, 8, 0],
+        "attractor_strength": 1.0,
+        "radius": 45
+      },
+      {
+        "id": "garden",
+        "type": "resource",
+        "resource_type": "food",
+        "name": "Garden food zone",
+        "location": [28, 10, -18],
+        "attractor_strength": 0.72,
+        "radius": 14,
+        "social_rule": "open"
+      },
+      {
+        "id": "garden_fountain",
+        "type": "resource",
+        "resource_type": "water",
+        "name": "Garden fountain",
+        "location": [30, 9.5, -16],
+        "attractor_strength": 0.85,
+        "radius": 10,
+        "capacity": 1,
+        "recharge_rate": 1.0,
+        "social_rule": "turn_taking",
+        "pressure_effect": -0.15,
+        "coherence_effect": 0.10,
+        "access_radius": 2.2,
+        "wait_radius": 6.5,
+        "drink_duration": 2.5
+      },
+      {
+        "id": "human_leslie",
+        "type": "threat",
+        "name": "Human presence",
+        "source": "player_pose",
+        "location": [32, 8, -14],
+        "attractor_strength": 1.4,
+        "radius": 18
+      }
+    ],
+    "sentinel": {
+      "alert_radius": 15.0,
+      "reaction_time_ms": 120,
+      "propagation_ms": 280
+    },
+    "escape": {
+      "duration_seconds": 8.0,
+      "flee_distance": 28.0,
+      "scatter_spread": 4.5
+    }
   },
   "debug": {
     "enabled": false
