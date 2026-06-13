@@ -298,10 +298,7 @@ class Colony:
             self._waypoint_dwell = max(0.0, self._waypoint_dwell - sim_dt * 0.25)
 
         if self._waypoint_dwell >= dwell_req:
-            half = max(n // 2, 1)
-            self._waypoint_index = (
-                half if self._waypoint_index == 0 else 0
-            ) % n
+            self._waypoint_index = (self._waypoint_index + 1) % n
             self._waypoint_dwell = 0.0
             target = self._patrol_point(self._waypoint_index)
         return target

@@ -1,0 +1,39 @@
+{
+  "enabled": true,
+  "fullscreen": true,
+  "default_mode": "create",
+  "overlay_alpha": 0.72,
+  "projection": {
+    "focal_length_px": 620,
+    "camera_z": 4.5,
+    "desk_plane_z": 0.0,
+    "default_depth": 0.0
+  },
+  "gestures": {
+    "pinch_threshold": 0.045,
+    "palm_open_threshold": 0.72,
+    "fist_threshold": 0.34,
+    "cursor_smoothing": 0.38,
+    "pinch_cooldown_ms": 350
+  },
+  "scene": {
+    "show_grid": true,
+    "grid_size": 2.0,
+    "grid_divisions": 8,
+    "grid_z": 0.0,
+    "default_primitive": "box",
+    "palette": [
+      [0, 210, 255],
+      [0, 180, 120],
+      [255, 160, 0],
+      [220, 90, 255],
+      [255, 90, 120]
+    ]
+  },
+  "persistence": {
+    "startup_scene": null,
+    "manual_save_path": "vized_scenes/scene.json",
+    "autosave_path": "vized_scenes/last_scene.json",
+    "autosave_seconds": 30
+  }
+}

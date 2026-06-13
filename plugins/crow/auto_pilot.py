@@ -7,7 +7,7 @@ from typing import Any
 
 from .flight_controller import FlightControls
 from .physics import CrowState
-from .colony_cycle import SCHEDULE_RETURN, SCHEDULE_ROOST_PERCH
+from .colony_cycle import SCHEDULE_OUTBOUND, SCHEDULE_RETURN, SCHEDULE_ROOST_PERCH
 from .roost import Colony
 
 
@@ -135,12 +135,14 @@ class RoutineAutoPilot:
         if abs(yaw_err) < deadzone:
             yaw_err = 0.0
 
-        # Scale turn demand down near waypoint to prevent overshoot spins.
+        # Scale turn demand near waypoint — keep gentle alignment to prevent orbit drift.
         slow_dist = float(self.cfg.get("approach_slow_distance", 14.0))
+        brake_dist = float(self.cfg.get("approach_brake_distance", 10.0))
         if dist_h < slow_dist:
-            yaw_err *= max(0.2, dist_h / slow_dist)
-        if dist_h < 5.0:
-            yaw_err = 0.0
+            align_floor = float(self.cfg.get("approach_align_floor", 0.35))
+            yaw_err *= max(align_floor, dist_h / slow_dist)
+        if dist_h < brake_dist:
+            self._turn_smooth *= 0.92
 
         turn_gain = float(self.cfg.get("turn_gain", 0.85))
         if dist_h > 18.0:
@@ -151,6 +153,9 @@ class RoutineAutoPilot:
 
         pitch_gain = float(self.cfg.get("altitude_pitch_gain", 0.12))
         pitch_raw = max(-0.35, min(0.35, -dy * pitch_gain))
+        # Ease into perch altitude on return — less dive-and-pull oscillation.
+        if schedule in SCHEDULE_RETURN or schedule in SCHEDULE_ROOST_PERCH:
+            pitch_raw *= min(1.0, dist_h / max(brake_dist, 1.0))
         pitch_alpha = float(self.cfg.get("pitch_smoothing", 0.28))
         self._pitch_smooth = pitch_alpha * pitch_raw + (1.0 - pitch_alpha) * self._pitch_smooth
 
@@ -163,6 +168,12 @@ class RoutineAutoPilot:
             self.cfg.get("departure_flap_distance", 14.0)
         ):
             flap = float(self.cfg.get("departure_flap_power", 0.22))
+        elif schedule in SCHEDULE_OUTBOUND and dist_h > 10.0 and lead.y < float(
+            self.cfg.get("takeoff_altitude", 12.0)
+        ):
+            flap = float(self.cfg.get("departure_flap_power", 0.28))
+        elif dist_h < brake_dist and abs(dy) > 0.4:
+            flap = float(self.cfg.get("approach_flap_power", 0.12))
 
         glide = flap < float(self.cfg.get("glide_flap_cutoff", 0.3))
         wingspan = float(self.cfg.get("glide_wingspan", 0.58)) if glide else 0.4

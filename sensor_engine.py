@@ -46,6 +46,13 @@ try:
 except ImportError:
     BLACKWING_AVAILABLE = False
 
+try:
+    from plugins.vized.editor import VizedEditor
+
+    VIZED_AVAILABLE = True
+except ImportError:
+    VIZED_AVAILABLE = False
+
 
 class ArmStateMachine:
     """Local mirror of execute-arming flow for operator observability.
@@ -1104,6 +1111,132 @@ def run_blackwing_loop(
         cv2.destroyAllWindows()
 
 
+def run_vized_loop(
+    config: dict[str, Any],
+    vized_config_path: str,
+    *,
+    fullscreen: bool = False,
+) -> None:
+    """Vized: fullscreen geometric 3D editor overlaid on the camera feed."""
+    if not VIZED_AVAILABLE:
+        print(
+            "[VIZED] plugins.vized not available. Ensure the plugins/vized/ directory exists.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    import cv2  # type: ignore
+
+    sensor_cfg = config["sensor"]
+    camera_index = int(sensor_cfg.get("camera_index", 0))
+    mirror = bool(sensor_cfg.get("mirror_preview", True))
+
+    cap = open_video_capture(camera_index)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open camera index {camera_index}.")
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(sensor_cfg.get("frame_width", 1280)))
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(sensor_cfg.get("frame_height", 720)))
+
+    vized_cfg = load_config(vized_config_path)
+    editor = VizedEditor(vized_cfg)
+
+    ui = overlay_ui_config(config)
+    font_scale = max(ui.font_scale, 0.58)
+    draw_landmarks = bool(config.get("debug", {}).get("draw_landmarks", False))
+    use_fullscreen = fullscreen or bool(vized_cfg.get("fullscreen", True)) or ui.fullscreen
+
+    win_title = "Vized — geometric 3D editor"
+    cv2.namedWindow(win_title, cv2.WINDOW_NORMAL)
+    if use_fullscreen:
+        cv2.setWindowProperty(win_title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    else:
+        _resize_debug_window(win_title, ui, fullscreen=False)
+
+    print("[VIZED] Starting…", flush=True)
+    print(editor.system_prompt(), flush=True)
+    print("=" * 58, flush=True)
+
+    t_prev = time.perf_counter()
+    fps_ema = 0.0
+    mp_cfg = config.get("mediapipe") if isinstance(config.get("mediapipe"), dict) else None
+
+    try:
+        with MediaPipeTasksVision(sensor_cfg, mp_cfg) as vision_tasks:
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    time.sleep(0.05)
+                    continue
+
+                t_now = time.perf_counter()
+                dt = min(t_now - t_prev, 0.1)
+                t_prev = t_now
+                inst = 1.0 / dt if dt > 1e-6 else 0.0
+                fps_ema = inst if fps_ema <= 0 else 0.85 * fps_ema + 0.15 * inst
+
+                if mirror:
+                    frame = cv2.flip(frame, 1)
+
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pose_result, hands_result = vision_tasks.process(rgb)
+
+                fh, fw = frame.shape[:2]
+                state = editor.update(fw, fh, hands_result, mirror=mirror, dt=dt)
+                editor.render(frame)
+
+                n_hands = len(hands_result.multi_hand_landmarks or [])
+                g = state.get("gesture") or {}
+                gesture_hint = []
+                if g.get("pinch"):
+                    gesture_hint.append("pinch")
+                if g.get("open_palm"):
+                    gesture_hint.append("palm")
+                if g.get("fist"):
+                    gesture_hint.append("fist")
+                if g.get("pointing"):
+                    gesture_hint.append("point")
+                gesture_tail = " · ".join(gesture_hint) if gesture_hint else "show hands"
+
+                hud_lines = [
+                    "Vized — 3D geometry on camera",
+                    f"FPS ~{fps_ema:.0f} | hands:{n_hands} | {gesture_tail}",
+                    editor.hud_line(),
+                    "Pinch place · point+pinch move · fist delete · palm select",
+                ]
+                footer = (
+                    "Q/Esc quit | S/C/M/R modes | 1-5 primitives | G grid | +/- depth | W/O save/load"
+                )
+
+                draw_accessible_hud(
+                    frame,
+                    hud_lines,
+                    footer=footer,
+                    font_scale=font_scale,
+                    compact=True,
+                )
+
+                if draw_landmarks:
+                    draw_tasks_landmarks(
+                        frame,
+                        pose_result,
+                        hands_result,
+                        draw_pose=False,
+                        draw_hands=True,
+                    )
+
+                cv2.imshow(win_title, frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("q"), 27):
+                    break
+                if key != 255:
+                    editor.handle_key(key)
+    finally:
+        editor.close()
+        cap.release()
+        cv2.destroyAllWindows()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="MediaPipe gesture + presence edge sensor"
@@ -1192,6 +1325,17 @@ def parse_args() -> argparse.Namespace:
         default="blackwing_config.json",
         help="Path to Blackwing plugin config JSON",
     )
+    parser.add_argument(
+        "--vized",
+        action="store_true",
+        help="Fullscreen geometric 3D editor overlaid on the camera feed",
+    )
+    parser.add_argument(
+        "--vized-config",
+        type=str,
+        default="vized_config.json",
+        help="Path to Vized editor config JSON",
+    )
     return parser.parse_args()
 
 
@@ -1222,6 +1366,10 @@ def main() -> None:
         run_blackwing_export_sample(
             config, args.blackwing_config, dry_run=args.dry_run
         )
+        return
+
+    if args.vized:
+        run_vized_loop(config, args.vized_config, fullscreen=args.fullscreen)
         return
 
     if args.blackwing:

@@ -126,6 +126,9 @@ class FlightController:
             + lean_bank * float(self.cfg.get("bank_lean_weight", 0.15))
         ) * float(self.cfg.get("bank_gain", 1.15))
         raw_bank = max(-1.0, min(1.0, raw_bank))
+        bank_deadzone = float(self.cfg.get("bank_deadzone", 0.045))
+        if abs(raw_bank) < bank_deadzone:
+            raw_bank = 0.0
         self._bank_ema = self._smooth_bank(self._bank_ema, raw_bank)
 
         shoulder_z = (float(left_sh.z) + float(right_sh.z)) / 2.0
@@ -161,6 +164,8 @@ class FlightController:
             min(1.0, (tracking_confidence - 0.25) / 0.65),
         )
         flap_power = min(1.0, flap_power * confidence_scale)
+        bank_out = max(-1.0, min(1.0, self._bank_ema * confidence_scale))
+        pitch_out = max(-1.0, min(1.0, pitch * confidence_scale))
 
         self._last_debug = FlightDebug(
             raw_left_wrist_y=left_y,
@@ -173,8 +178,8 @@ class FlightController:
         return FlightControls(
             flap_power=round(flap_power, 4),
             wingspan=round(wingspan, 4),
-            bank_steering=round(self._bank_ema, 4),
-            pitch=round(pitch, 4),
+            bank_steering=round(bank_out, 4),
+            pitch=round(pitch_out, 4),
             glide=glide,
             perch=perch,
             tracking=True,

@@ -423,19 +423,23 @@ class BlackwingPilot:
         parts: list[str] = [f"MANUAL · {lead.mode} · {lead_agent}"]
         if self._hud_cfg.get("show_controls_summary", True):
             if controls.perch:
-                pass
+                parts.append("perch")
             elif controls.glide:
-                parts.append("glide")
+                parts.append("glide — arms wide")
             elif controls.flap_power > 0.12:
-                parts.append(f"flap {controls.flap_power:.0%}")
+                parts.append(f"flap {controls.flap_power:.0%} — pump down")
             elif controls.pitch > 0.2:
-                parts.append("dive")
+                parts.append("dive — reach forward")
             elif controls.pitch < -0.2:
-                parts.append("pull back")
+                parts.append("climb — pull back")
             elif abs(controls.bank_steering) > 0.04:
                 parts.append(
-                    "bank right" if controls.bank_steering > 0 else "bank left"
+                    "turn right — left wrist up"
+                    if controls.bank_steering > 0
+                    else "turn left — right wrist up"
                 )
+            else:
+                parts.append("neutral — flap/turn/glide")
 
         parts.append(f"alt {lead.y:.1f}")
         parts.append(f"conf {confidence:.0%}")
@@ -485,8 +489,9 @@ class BlackwingPilot:
     def system_prompt() -> str:
         return (
             "Blackwing Pilot — colony starts in AUTO mode (daily cycle patrol).\n"
-            "Press A to toggle manual control — then flap, glide, and bank with your body.\n"
-            "Flap arms rhythmically for lift. Hold arms wide to glide.\n"
-            "Steer: raise one wrist or lean shoulders — left higher turns right.\n"
-            "Open the Crow Hangar in your browser for the Three.js flock view."
+            "Press A to toggle MANUAL control.\n"
+            "Manual gestures: pump both arms down = flap/lift | arms wide = glide\n"
+            "Raise LEFT wrist = turn RIGHT | raise RIGHT wrist = turn LEFT\n"
+            "Reach forward = dive | pull back = climb | arms in + still = perch\n"
+            "Open the Crow Hangar in Chrome/Edge for the Three.js flock view."
         )

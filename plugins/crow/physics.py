@@ -136,6 +136,15 @@ class CrowPhysics:
             auto_yaw = float(self.cfg.get("auto_yaw_rate", 1.35))
             lead.yaw += controls.bank_steering * auto_yaw * dt
             cruise = float(self.cfg.get("auto_cruise_speed", 3.6))
+            if colony is not None:
+                tx, _, tz = colony.routine_target(lead)
+                dist_h = math.hypot(tx - lead.x, tz - lead.z)
+                brake_dist = float(self.cfg.get("auto_approach_brake_distance", 12.0))
+                if dist_h < brake_dist:
+                    cruise *= max(
+                        float(self.cfg.get("auto_approach_min_speed", 0.55)),
+                        dist_h / brake_dist,
+                    )
             hold = float(self.cfg.get("auto_heading_hold", 3.8)) * dt
             self._seek_speed(lead, cruise, hold)
             self._damp_lateral(
@@ -397,11 +406,13 @@ class CrowPhysics:
         dz = target[2] - crow.z
         dist_h = math.hypot(dx, dz)
         alt_err = abs(dy)
-        strength = min(1.0, snap_strength * dt * (1.35 if snap else 1.0))
+        dist_3d = math.sqrt(dist_h * dist_h + dy * dy)
+        arrived = dist_h < arrival_dist and alt_err < arrival_alt
+        ease = min(1.0, dist_3d / max(float(self.cfg.get("perch_approach_ease", 8.0)), 1.0))
+        strength = min(1.0, snap_strength * dt * (0.55 + 0.45 * ease) * (1.35 if snap else 1.0))
         crow.x += dx * strength
         crow.y += dy * strength
         crow.z += dz * strength
-        arrived = dist_h < arrival_dist and alt_err < arrival_alt
         if arrived or snap:
             perch_drag = float(self.cfg.get("perch_drag", 4.0))
             crow.vx *= max(0.0, 1.0 - perch_drag * dt)
@@ -409,9 +420,9 @@ class CrowPhysics:
             crow.vz *= max(0.0, 1.0 - perch_drag * dt)
             crow.roll *= max(0.0, 1.0 - 2.0 * dt)
         else:
-            follow = snap_strength * 0.45
+            follow = snap_strength * (0.28 + 0.22 * ease)
             crow.vx = dx * follow
-            crow.vy = dy * follow * 1.1
+            crow.vy = dy * follow * 1.05
             crow.vz = dz * follow
         return arrived
 
@@ -503,7 +514,7 @@ class CrowPhysics:
             agent = colony.get_agent(follower.id) if colony else None
             role = agent.role if agent else "wing"
 
-            lag = (0.35 + i * 0.12) * _lag_scale.get(role, 1.0)
+            lag = (0.28 + i * 0.10) * _lag_scale.get(role, 1.0)
             side = (
                 lateral
                 * _lateral_scale.get(role, 1.0)
@@ -532,7 +543,7 @@ class CrowPhysics:
             follower.vz = (target_z - follower.z) * lag
 
             if role == "scout":
-                wobble = 0.18 * dt
+                wobble = 0.10 * dt
                 follower.vx += math.sin(follower.wing_phase * 1.3 + i) * wobble
                 follower.vz += math.cos(follower.wing_phase * 1.1 + i) * wobble * 0.85
 

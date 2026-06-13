@@ -6,10 +6,10 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from .colony_cycle import SCHEDULE_OUTBOUND, SCHEDULE_PATROL
+from .colony_cycle import SCHEDULE_OUTBOUND
 from .physics import CrowState
 
-_RESOURCE_PHASES = SCHEDULE_PATROL | SCHEDULE_OUTBOUND | frozenset({"foraging"})
+_RESOURCE_PHASES = SCHEDULE_OUTBOUND | frozenset({"foraging", "dispersal"})
 
 
 @dataclass
